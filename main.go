@@ -132,17 +132,19 @@ func (cc CommandCache) runAndCache() int {
 	return exitStatus
 }
 
+var exit = os.Exit
+
 func main() {
 	opts, err := docopt.ParseDoc(COMMAND_USAGE)
 	if err != nil {
 		fmt.Println(err)
-		os.Exit(1)
+		exit(1)
 	}
 	cacheDirectory := opts["--cache-directory"].(string)
 	os.MkdirAll(cacheDirectory, 0755)
 	if err != nil {
 		fmt.Println(err)
-		os.Exit(1)
+		exit(1)
 	}
 
 	commands := opts["COMMAND"].([]string)
@@ -169,5 +171,5 @@ func main() {
 	if err != nil {
 		exitStatus = commandCache.runAndCache()
 	}
-	os.Exit(exitStatus)
+	exit(exitStatus)
 }
