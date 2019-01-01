@@ -2,13 +2,15 @@ package main
 
 import (
 	"testing"
+
+	docopt "github.com/docopt/docopt-go"
 )
 
-func TestMain(t *testing.T) {
-	exit = func(i int) {
-		if i != 1 {
-			t.Error("exit code Must be 1")
-		}
+func TestDocopt(t *testing.T) {
+	_, err := docopt.ParseArgs(COMMAND_USAGE, []string{
+		"--file", "test.txt", "--", "ls", "-ahl",
+	}, "")
+	if err != nil {
+		t.Error("Document for docopt has broken")
 	}
-	main()
 }

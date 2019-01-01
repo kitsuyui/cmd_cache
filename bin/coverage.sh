@@ -8,5 +8,5 @@ for pkg in '' ; do
     ./"$pkg" \
   > /dev/null
 done
-cat - - <<<'mode: atomic' <(tail -n +2 -q "$outdir"/*.out) > coverage.out
+cat - - <<<'mode: atomic' <(tail -n +2 -q "$outdir"/.out) > coverage.out
 rm -rf "$outdir"
