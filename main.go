@@ -132,6 +132,7 @@ func (cc CommandCache) runAndCache() int {
 	return exitStatus
 }
 
+var version string
 var exit = os.Exit
 
 func main() {
@@ -139,6 +140,10 @@ func main() {
 	if err != nil {
 		fmt.Println(err)
 		exit(1)
+	}
+	if showVersion, _ := opts.Bool("--version"); showVersion {
+		println(version)
+		return
 	}
 	cacheDirectory := opts["--cache-directory"].(string)
 	os.MkdirAll(cacheDirectory, 0755)
