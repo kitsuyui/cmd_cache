@@ -41,7 +41,7 @@ type CommandContext struct {
 	Filenames                []string
 }
 
-func (cc CommandContext) writeToHash(h hash.Hash) {
+func (cc CommandContext) WriteToHash(h hash.Hash) {
 	for _, cmd := range cc.Command {
 		io.WriteString(h, cmd)
 	}
@@ -72,7 +72,7 @@ type CommandCache struct {
 	ErrFilepath    string
 }
 
-func (cc CommandCache) replayByCache() (int, error) {
+func (cc CommandCache) ReplayByCache() (int, error) {
 	outFile, err := os.Open(cc.OutFilepath)
 	if err != nil {
 		return 0, err
@@ -97,7 +97,7 @@ func (cc CommandCache) replayByCache() (int, error) {
 	return exitStatus, nil
 }
 
-func (cc CommandCache) runAndCache() int {
+func (cc CommandCache) RunAndCache() int {
 	outFile, err := os.OpenFile(cc.OutFilepath, os.O_WRONLY|os.O_CREATE, 0666)
 	if err != nil {
 		log.Fatal(err)
@@ -161,7 +161,7 @@ func main() {
 	}
 
 	h := sha1.New()
-	commandContext.writeToHash(h)
+	commandContext.WriteToHash(h)
 	cacheKey := hex.EncodeToString(h.Sum(nil))
 
 	commandCache := CommandCache{
@@ -172,9 +172,9 @@ func main() {
 	}
 
 	var exitStatus int
-	exitStatus, err = commandCache.replayByCache()
+	exitStatus, err = commandCache.ReplayByCache()
 	if err != nil {
-		exitStatus = commandCache.runAndCache()
+		exitStatus = commandCache.RunAndCache()
 	}
 	exit(exitStatus)
 }
