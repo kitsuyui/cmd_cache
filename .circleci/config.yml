@@ -3,7 +3,7 @@ jobs:
   test:
     working_directory: /go/src/github.com/kitsuyui/cmd_cache
     docker:
-      - image: golang:1.12.7-stretch@sha256:5ed856d584aea9940353b027dc82015ea8b45ff408529084348d7b467bd9aafb
+      - image: golang:1.12.9-stretch@sha256:7735f0c8dcb6f99c93c5f8c6af492af4f6c75582e20008a8701473ed627fd316
     steps:
       - checkout
       - setup_remote_docker
@@ -15,7 +15,7 @@ jobs:
   release:
     working_directory: /go/src/github.com/kitsuyui/cmd_cache
     docker:
-      - image: golang:1.12.7-stretch@sha256:5ed856d584aea9940353b027dc82015ea8b45ff408529084348d7b467bd9aafb
+      - image: golang:1.12.9-stretch@sha256:7735f0c8dcb6f99c93c5f8c6af492af4f6c75582e20008a8701473ed627fd316
     steps:
       - checkout
       - setup_remote_docker
