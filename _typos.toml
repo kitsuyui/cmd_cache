@@ -1,0 +1,6 @@
+# typos is a Source code spell checker
+# https://github.com/crate-ci/typos
+[default.extend-words]
+# not typos
+# https://pkg.go.dev/os#pkg-constants
+WRONLY = "WRONLY"
