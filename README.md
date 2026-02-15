@@ -1,6 +1,6 @@
 # cmd_cache
 
-[![Codecov Status](https://img.shields.io/codecov/c/github/kitsuyui/cmd_cache.svg)](https://codecov.io/github/kitsuyui/cmd_cache/)
+![Coverage](https://raw.githubusercontent.com/kitsuyui/octocov-central/main/badges/kitsuyui/cmd_cache/coverage.svg)
 [![Github All Releases](https://img.shields.io/github/downloads/kitsuyui/cmd_cache/total.svg)](https://github.com/kitsuyui/cmd_cache/releases/latest)
 
 
