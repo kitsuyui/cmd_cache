@@ -98,17 +98,17 @@ func (cc CommandCache) ReplayByCache() (int, error) {
 }
 
 func (cc CommandCache) RunAndCache() int {
-	outFile, err := os.OpenFile(cc.OutFilepath, os.O_WRONLY|os.O_CREATE, 0666)
+	outFile, err := os.OpenFile(cc.OutFilepath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer outFile.Close()
-	errFile, err := os.OpenFile(cc.ErrFilepath, os.O_WRONLY|os.O_CREATE, 0666)
+	errFile, err := os.OpenFile(cc.ErrFilepath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer errFile.Close()
-	statusFile, err := os.OpenFile(cc.StatusFilepath, os.O_WRONLY|os.O_CREATE, 0666)
+	statusFile, err := os.OpenFile(cc.StatusFilepath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -154,8 +154,8 @@ func main() {
 
 	commands := opts["COMMAND"].([]string)
 	commandContext := CommandContext{
-		Command: commands,
-		Texts:   opts["TEXT"].([]string),
+		Command:                  commands,
+		Texts:                    opts["TEXT"].([]string),
 		EnvironmentVariableNames: opts["ENV"].([]string),
 		Filenames:                opts["FILE"].([]string),
 	}
