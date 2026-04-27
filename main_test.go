@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha1"
 	"encoding/hex"
+	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -54,8 +55,8 @@ func hashStringFromCommandContext(cc CommandContext) string {
 
 func TestHashWhenEverythingIsEmpty(t *testing.T) {
 	hashString := hashStringFromCommandContext(CommandContext{
-		Command: []string{},
-		Texts:   []string{},
+		Command:                  []string{},
+		Texts:                    []string{},
 		EnvironmentVariableNames: []string{},
 		Filenames:                []string{},
 	})
@@ -66,8 +67,8 @@ func TestHashWhenEverythingIsEmpty(t *testing.T) {
 
 func TestTextHash(t *testing.T) {
 	hashString := hashStringFromCommandContext(CommandContext{
-		Command: []string{},
-		Texts:   []string{"Hello, World!"},
+		Command:                  []string{},
+		Texts:                    []string{"Hello, World!"},
 		EnvironmentVariableNames: []string{},
 		Filenames:                []string{},
 	})
@@ -79,8 +80,8 @@ func TestTextHash(t *testing.T) {
 func TestEnvHash(t *testing.T) {
 	os.Setenv("LD_LIBRARY_PATH", "/usr/local/lib:/usr/lib")
 	hashString := hashStringFromCommandContext(CommandContext{
-		Command: []string{},
-		Texts:   []string{},
+		Command:                  []string{},
+		Texts:                    []string{},
 		EnvironmentVariableNames: []string{"LD_LIBRARY_PATH"},
 		Filenames:                []string{},
 	})
@@ -97,8 +98,8 @@ func TestFileHash(t *testing.T) {
 	outFile.Write([]byte("Hello, World!"))
 	defer outFile.Close()
 	hashString := hashStringFromCommandContext(CommandContext{
-		Command: []string{},
-		Texts:   []string{},
+		Command:                  []string{},
+		Texts:                    []string{},
 		EnvironmentVariableNames: []string{},
 		Filenames:                []string{"build/testfile"},
 	})
@@ -118,4 +119,49 @@ func TestSomething(t *testing.T) {
 	}
 	commandCache.RunAndCache()
 	commandCache.ReplayByCache()
+}
+
+func TestRunAndCacheTruncatesExistingCacheFiles(t *testing.T) {
+	cacheDirectory := ".cmd_cache_test"
+	cacheKey := "cache-key"
+	if err := os.MkdirAll(cacheDirectory, 0755); err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(cacheDirectory)
+
+	commandCache := CommandCache{
+		Command:        []string{"sh", "-c", "printf x; printf y >&2; exit 7"},
+		StatusFilepath: filepath.Join(cacheDirectory, cacheKey),
+		OutFilepath:    filepath.Join(cacheDirectory, cacheKey+"_out"),
+		ErrFilepath:    filepath.Join(cacheDirectory, cacheKey+"_err"),
+	}
+
+	for path, value := range map[string]string{
+		commandCache.StatusFilepath: "123456789",
+		commandCache.OutFilepath:    "previous stdout",
+		commandCache.ErrFilepath:    "previous stderr",
+	} {
+		if err := ioutil.WriteFile(path, []byte(value), 0666); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	exitStatus := commandCache.RunAndCache()
+	if exitStatus != 7 {
+		t.Fatalf("unexpected exit status: %d", exitStatus)
+	}
+
+	for path, expected := range map[string]string{
+		commandCache.StatusFilepath: "7",
+		commandCache.OutFilepath:    "x",
+		commandCache.ErrFilepath:    "y",
+	} {
+		content, err := ioutil.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(content) != expected {
+			t.Fatalf("%s = %q, want %q", path, string(content), expected)
+		}
+	}
 }
