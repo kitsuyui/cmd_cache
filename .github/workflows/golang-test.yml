@@ -27,6 +27,12 @@ jobs:
       - name: install dependencies
         run: go install
 
+      - name: install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: shellcheck
+        run: shellcheck bin/*.sh
+
       - name: lint
         run: |
           go vet ./...
@@ -34,4 +40,3 @@ jobs:
 
       - name: test
         run: go test -v -cover -race -covermode=atomic -coverprofile=coverage.out ./...
-
