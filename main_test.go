@@ -117,8 +117,12 @@ func TestSomething(t *testing.T) {
 		OutFilepath:    filepath.Join(cacheDirectory, cacheKey+"_out"),
 		ErrFilepath:    filepath.Join(cacheDirectory, cacheKey+"_err"),
 	}
-	commandCache.RunAndCache()
-	commandCache.ReplayByCache()
+	if _, err := commandCache.RunAndCache(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := commandCache.ReplayByCache(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRunAndCacheTruncatesExistingCacheFiles(t *testing.T) {
@@ -146,7 +150,10 @@ func TestRunAndCacheTruncatesExistingCacheFiles(t *testing.T) {
 		}
 	}
 
-	exitStatus := commandCache.RunAndCache()
+	exitStatus, err := commandCache.RunAndCache()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if exitStatus != 7 {
 		t.Fatalf("unexpected exit status: %d", exitStatus)
 	}
@@ -163,5 +170,52 @@ func TestRunAndCacheTruncatesExistingCacheFiles(t *testing.T) {
 		if string(content) != expected {
 			t.Fatalf("%s = %q, want %q", path, string(content), expected)
 		}
+	}
+}
+
+func TestReplayByCacheRejectsInvalidStatus(t *testing.T) {
+	cacheDirectory := t.TempDir()
+	cacheKey := "cache-key"
+	commandCache := CommandCache{
+		Command:        []string{"sh", "-c", "echo unreachable"},
+		StatusFilepath: filepath.Join(cacheDirectory, cacheKey),
+		OutFilepath:    filepath.Join(cacheDirectory, cacheKey+"_out"),
+		ErrFilepath:    filepath.Join(cacheDirectory, cacheKey+"_err"),
+	}
+
+	for path, value := range map[string]string{
+		commandCache.StatusFilepath: "not-a-status",
+		commandCache.OutFilepath:    "cached stdout",
+		commandCache.ErrFilepath:    "cached stderr",
+	} {
+		if err := ioutil.WriteFile(path, []byte(value), 0666); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := commandCache.ReplayByCache(); err == nil {
+		t.Fatal("ReplayByCache() returned nil error for invalid status")
+	}
+}
+
+func TestRunAndCacheReturnsCommandStartError(t *testing.T) {
+	cacheDirectory := t.TempDir()
+	cacheKey := "cache-key"
+	commandCache := CommandCache{
+		Command:        []string{"cmd-cache-command-that-does-not-exist"},
+		StatusFilepath: filepath.Join(cacheDirectory, cacheKey),
+		OutFilepath:    filepath.Join(cacheDirectory, cacheKey+"_out"),
+		ErrFilepath:    filepath.Join(cacheDirectory, cacheKey+"_err"),
+	}
+
+	exitStatus, err := commandCache.RunAndCache()
+	if err == nil {
+		t.Fatal("RunAndCache() returned nil error for command start failure")
+	}
+	if exitStatus != 1 {
+		t.Fatalf("unexpected exit status: %d", exitStatus)
+	}
+	if _, err := os.Stat(commandCache.StatusFilepath); !os.IsNotExist(err) {
+		t.Fatalf("status file should not be cached for command start failure: %v", err)
 	}
 }

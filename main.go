@@ -87,17 +87,21 @@ func (cc CommandCache) ReplayByCache() (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	defer statusFile.Close()
 	exitStatusText, err := ioutil.ReadAll(statusFile)
 	if err != nil {
 		return 0, err
 	}
 	exitStatus, err := strconv.Atoi(string(exitStatusText))
+	if err != nil {
+		return 0, err
+	}
 	io.Copy(os.Stdout, outFile)
 	io.Copy(os.Stderr, errFile)
 	return exitStatus, nil
 }
 
-func (cc CommandCache) RunAndCache() int {
+func (cc CommandCache) RunAndCache() (int, error) {
 	outFile, err := os.OpenFile(cc.OutFilepath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
 		log.Fatal(err)
@@ -108,11 +112,6 @@ func (cc CommandCache) RunAndCache() int {
 		log.Fatal(err)
 	}
 	defer errFile.Close()
-	statusFile, err := os.OpenFile(cc.StatusFilepath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer statusFile.Close()
 	outWriter := io.MultiWriter(outFile, os.Stdout)
 	errWriter := io.MultiWriter(errFile, os.Stderr)
 
@@ -127,9 +126,18 @@ func (cc CommandCache) RunAndCache() int {
 		if s, ok := err2.Sys().(syscall.WaitStatus); ok {
 			exitStatus = s.ExitStatus()
 		}
+	} else if err != nil {
+		return 1, err
 	}
-	statusFile.Write([]byte(strconv.Itoa(exitStatus)))
-	return exitStatus
+	statusFile, err := os.OpenFile(cc.StatusFilepath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
+	if err != nil {
+		return exitStatus, err
+	}
+	defer statusFile.Close()
+	if _, err := statusFile.Write([]byte(strconv.Itoa(exitStatus))); err != nil {
+		return exitStatus, err
+	}
+	return exitStatus, nil
 }
 
 var version string
@@ -174,7 +182,10 @@ func main() {
 	var exitStatus int
 	exitStatus, err = commandCache.ReplayByCache()
 	if err != nil {
-		exitStatus = commandCache.RunAndCache()
+		exitStatus, err = commandCache.RunAndCache()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
 	}
 	exit(exitStatus)
 }
