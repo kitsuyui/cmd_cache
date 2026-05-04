@@ -1,0 +1,7 @@
+.cmd_cache
+.cmd_cache_test
+.git
+.github
+.tmp
+build
+coverage.out
