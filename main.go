@@ -94,7 +94,7 @@ func (cc CommandCache) ReplayByCache() (int, error) {
 	}
 	exitStatus, err := strconv.Atoi(string(exitStatusText))
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("invalid cached exit status in %s (%q): %w", cc.StatusFilepath, string(exitStatusText), err)
 	}
 	io.Copy(os.Stdout, outFile)
 	io.Copy(os.Stderr, errFile)

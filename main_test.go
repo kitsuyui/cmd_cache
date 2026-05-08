@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	docopt "github.com/docopt/docopt-go"
@@ -193,8 +194,16 @@ func TestReplayByCacheRejectsInvalidStatus(t *testing.T) {
 		}
 	}
 
-	if _, err := commandCache.ReplayByCache(); err == nil {
+	_, err := commandCache.ReplayByCache()
+	if err == nil {
 		t.Fatal("ReplayByCache() returned nil error for invalid status")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, commandCache.StatusFilepath) {
+		t.Errorf("error message %q does not contain status filepath %q", msg, commandCache.StatusFilepath)
+	}
+	if !strings.Contains(msg, "not-a-status") {
+		t.Errorf("error message %q does not contain invalid status content", msg)
 	}
 }
 
