@@ -66,7 +66,9 @@ func writeFileToHash(h hash.Hash, filename string) {
 		log.Fatal(err)
 	}
 	defer f.Close()
-	io.Copy(h, f)
+	if _, err := io.Copy(h, f); err != nil {
+		log.Fatal(err)
+	}
 }
 
 type CommandCache struct {
@@ -100,8 +102,12 @@ func (cc CommandCache) ReplayByCache() (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("invalid cached exit status in %s (%q): %w", cc.StatusFilepath, string(exitStatusText), err)
 	}
-	io.Copy(os.Stdout, outFile)
-	io.Copy(os.Stderr, errFile)
+	if _, err := io.Copy(os.Stdout, outFile); err != nil {
+		return 0, err
+	}
+	if _, err := io.Copy(os.Stderr, errFile); err != nil {
+		return 0, err
+	}
 	return exitStatus, nil
 }
 
