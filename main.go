@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -94,7 +93,7 @@ func (cc CommandCache) ReplayByCache() (int, error) {
 		return 0, err
 	}
 	defer statusFile.Close()
-	exitStatusText, err := ioutil.ReadAll(statusFile)
+	exitStatusText, err := io.ReadAll(statusFile)
 	if err != nil {
 		return 0, err
 	}

@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/sha1"
 	"encoding/hex"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -146,7 +145,7 @@ func TestRunAndCacheTruncatesExistingCacheFiles(t *testing.T) {
 		commandCache.OutFilepath:    "previous stdout",
 		commandCache.ErrFilepath:    "previous stderr",
 	} {
-		if err := ioutil.WriteFile(path, []byte(value), 0666); err != nil {
+		if err := os.WriteFile(path, []byte(value), 0666); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -164,7 +163,7 @@ func TestRunAndCacheTruncatesExistingCacheFiles(t *testing.T) {
 		commandCache.OutFilepath:    "x",
 		commandCache.ErrFilepath:    "y",
 	} {
-		content, err := ioutil.ReadFile(path)
+		content, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -189,7 +188,7 @@ func TestReplayByCacheRejectsInvalidStatus(t *testing.T) {
 		commandCache.OutFilepath:    "cached stdout",
 		commandCache.ErrFilepath:    "cached stderr",
 	} {
-		if err := ioutil.WriteFile(path, []byte(value), 0666); err != nil {
+		if err := os.WriteFile(path, []byte(value), 0666); err != nil {
 			t.Fatal(err)
 		}
 	}
