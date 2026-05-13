@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha1"
 	"encoding/hex"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -43,6 +44,76 @@ func TestVersion(t *testing.T) {
 	}, "")
 	if err != nil {
 		t.Error("Document for docopt has broken")
+	}
+}
+
+type testExitCode int
+
+func captureStdoutDuring(t *testing.T, fn func()) (string, any) {
+	t.Helper()
+
+	originalStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+
+	var recovered any
+	func() {
+		defer func() {
+			recovered = recover()
+			os.Stdout = originalStdout
+			if err := writer.Close(); err != nil {
+				t.Errorf("failed to close stdout writer: %v", err)
+			}
+		}()
+		fn()
+	}()
+
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return string(output), recovered
+}
+
+func TestMainExitsWhenCacheDirectoryCannotBeCreated(t *testing.T) {
+	originalExit := exit
+	defer func() {
+		exit = originalExit
+	}()
+	originalArgs := os.Args
+	defer func() {
+		os.Args = originalArgs
+	}()
+
+	parentFile := filepath.Join(t.TempDir(), "not-dir")
+	if err := os.WriteFile(parentFile, []byte("not a directory"), 0666); err != nil {
+		t.Fatal(err)
+	}
+	cacheDirectory := filepath.Join(parentFile, "cache")
+	os.Args = []string{"cmd_cache", "--cache-directory=" + cacheDirectory, "--", "sh", "-c", "echo should-not-run"}
+	exit = func(code int) {
+		panic(testExitCode(code))
+	}
+
+	output, recovered := captureStdoutDuring(t, main)
+	code, ok := recovered.(testExitCode)
+	if !ok {
+		t.Fatalf("main() recovered %v, want exit code panic", recovered)
+	}
+	if code != 1 {
+		t.Fatalf("unexpected exit code: %d", code)
+	}
+	if strings.Contains(output, "Usage:") {
+		t.Fatalf("docopt parse failed unexpectedly: %q", output)
+	}
+	if !strings.Contains(output, parentFile) {
+		t.Fatalf("output = %q, want mkdir error mentioning %q", output, parentFile)
 	}
 }
 

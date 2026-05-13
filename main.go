@@ -163,8 +163,7 @@ func main() {
 		return
 	}
 	cacheDirectory := opts["--cache-directory"].(string)
-	os.MkdirAll(cacheDirectory, 0755)
-	if err != nil {
+	if err := os.MkdirAll(cacheDirectory, 0755); err != nil {
 		fmt.Println(err)
 		exit(1)
 	}
