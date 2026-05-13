@@ -77,6 +77,53 @@ type CommandCache struct {
 	ErrFilepath    string
 }
 
+type cacheTempFile struct {
+	file      *os.File
+	path      string
+	finalPath string
+}
+
+func newCacheTempFile(finalPath string) (*cacheTempFile, error) {
+	file, err := os.CreateTemp(filepath.Dir(finalPath), "."+filepath.Base(finalPath)+".tmp-")
+	if err != nil {
+		return nil, err
+	}
+	return &cacheTempFile{
+		file:      file,
+		path:      file.Name(),
+		finalPath: finalPath,
+	}, nil
+}
+
+func (f *cacheTempFile) Close() error {
+	if f.file == nil {
+		return nil
+	}
+	err := f.file.Close()
+	f.file = nil
+	return err
+}
+
+func (f *cacheTempFile) Remove() {
+	_ = f.Close()
+	if f.path == "" {
+		return
+	}
+	_ = os.Remove(f.path)
+	f.path = ""
+}
+
+func (f *cacheTempFile) Rename() error {
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(f.path, f.finalPath); err != nil {
+		return err
+	}
+	f.path = ""
+	return nil
+}
+
 func (cc CommandCache) ReplayByCache() (int, error) {
 	outFile, err := os.Open(cc.OutFilepath)
 	if err != nil {
@@ -111,18 +158,18 @@ func (cc CommandCache) ReplayByCache() (int, error) {
 }
 
 func (cc CommandCache) RunAndCache() (int, error) {
-	outFile, err := os.OpenFile(cc.OutFilepath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
+	outFile, err := newCacheTempFile(cc.OutFilepath)
 	if err != nil {
-		log.Fatal(err)
+		return 1, err
 	}
-	defer outFile.Close()
-	errFile, err := os.OpenFile(cc.ErrFilepath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
+	defer outFile.Remove()
+	errFile, err := newCacheTempFile(cc.ErrFilepath)
 	if err != nil {
-		log.Fatal(err)
+		return 1, err
 	}
-	defer errFile.Close()
-	outWriter := io.MultiWriter(outFile, os.Stdout)
-	errWriter := io.MultiWriter(errFile, os.Stderr)
+	defer errFile.Remove()
+	outWriter := io.MultiWriter(outFile.file, os.Stdout)
+	errWriter := io.MultiWriter(errFile.file, os.Stderr)
 
 	commands := cc.Command
 	cmd := exec.Command(commands[0], commands[1:]...)
@@ -142,12 +189,24 @@ func (cc CommandCache) RunAndCache() (int, error) {
 		// Don't cache failures; the command should be retried on the next invocation.
 		return exitStatus, nil
 	}
-	statusFile, err := os.OpenFile(cc.StatusFilepath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
+	statusFile, err := newCacheTempFile(cc.StatusFilepath)
 	if err != nil {
 		return exitStatus, err
 	}
-	defer statusFile.Close()
-	if _, err := statusFile.Write([]byte(strconv.Itoa(exitStatus))); err != nil {
+	defer statusFile.Remove()
+	if _, err := statusFile.file.Write([]byte(strconv.Itoa(exitStatus))); err != nil {
+		return exitStatus, err
+	}
+	if err := os.Remove(cc.StatusFilepath); err != nil && !os.IsNotExist(err) {
+		return exitStatus, err
+	}
+	if err := outFile.Rename(); err != nil {
+		return exitStatus, err
+	}
+	if err := errFile.Rename(); err != nil {
+		return exitStatus, err
+	}
+	if err := statusFile.Rename(); err != nil {
 		return exitStatus, err
 	}
 	return exitStatus, nil
