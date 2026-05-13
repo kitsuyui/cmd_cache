@@ -131,7 +131,7 @@ func TestHashWhenEverythingIsEmpty(t *testing.T) {
 		EnvironmentVariableNames: []string{},
 		Filenames:                []string{},
 	})
-	if hashString != "da39a3ee5e6b4b0d3255bfef95601890afd80709" {
+	if hashString != "28d86c56b3bf26d236569b8dc8c3f91f32f47bc7" {
 		t.Error("Unexpected hash value:", hashString)
 	}
 }
@@ -143,7 +143,7 @@ func TestTextHash(t *testing.T) {
 		EnvironmentVariableNames: []string{},
 		Filenames:                []string{},
 	})
-	if hashString != "0a0a9f2a6772942557ab5355d76af442f8f65e01" {
+	if hashString != "cd5a4bda291ed743b9a4bf3e0e9109d7f83b0fe2" {
 		t.Error("Unexpected hash value:", hashString)
 	}
 }
@@ -156,7 +156,7 @@ func TestEnvHash(t *testing.T) {
 		EnvironmentVariableNames: []string{"LD_LIBRARY_PATH"},
 		Filenames:                []string{},
 	})
-	if hashString != "3d0fcf9d8dac962ba44dae6b205b541075451732" {
+	if hashString != "8475fc388c3fe8f6d3c5b52ab71f8476fff1c1b5" {
 		t.Error("Unexpected hash value:", hashString)
 	}
 }
@@ -174,8 +174,27 @@ func TestFileHash(t *testing.T) {
 		EnvironmentVariableNames: []string{},
 		Filenames:                []string{"build/testfile"},
 	})
-	if hashString != "8bfe40a6a2f5765f8e1d148bfb3d39d4fa0e709a" {
+	if hashString != "6d7e43ef5351becf7a79030cfa7325756176674b" {
 		t.Error("Unexpected hash value:", hashString)
+	}
+}
+
+func TestHashCollisionPrevented(t *testing.T) {
+	// "echo" command with "foo" text must differ from "echofoo" command alone.
+	hashCmdAndText := hashStringFromCommandContext(CommandContext{
+		Command:                  []string{"echo"},
+		Texts:                    []string{"foo"},
+		EnvironmentVariableNames: []string{},
+		Filenames:                []string{},
+	})
+	hashCmdOnly := hashStringFromCommandContext(CommandContext{
+		Command:                  []string{"echofoo"},
+		Texts:                    []string{},
+		EnvironmentVariableNames: []string{},
+		Filenames:                []string{},
+	})
+	if hashCmdAndText == hashCmdOnly {
+		t.Error("hash collision: {cmd:[echo], text:[foo]} must differ from {cmd:[echofoo]}")
 	}
 }
 
