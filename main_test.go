@@ -242,6 +242,7 @@ func TestRunAndCacheTruncatesExistingCacheFiles(t *testing.T) {
 			t.Fatalf("%s = %q, want %q", path, string(content), expected)
 		}
 	}
+	assertNoCacheTempFiles(t, cacheDirectory)
 }
 
 func TestRunAndCacheDoesNotCacheFailures(t *testing.T) {
@@ -264,6 +265,7 @@ func TestRunAndCacheDoesNotCacheFailures(t *testing.T) {
 	if _, err := os.Stat(commandCache.StatusFilepath); !os.IsNotExist(err) {
 		t.Fatal("status file must not be written for failed commands")
 	}
+	assertNoCacheTempFiles(t, cacheDirectory)
 }
 
 func TestReplayByCacheRejectsInvalidStatus(t *testing.T) {
@@ -318,5 +320,18 @@ func TestRunAndCacheReturnsCommandStartError(t *testing.T) {
 	}
 	if _, err := os.Stat(commandCache.StatusFilepath); !os.IsNotExist(err) {
 		t.Fatalf("status file should not be cached for command start failure: %v", err)
+	}
+	assertNoCacheTempFiles(t, cacheDirectory)
+}
+
+func assertNoCacheTempFiles(t *testing.T, cacheDirectory string) {
+	t.Helper()
+
+	matches, err := filepath.Glob(filepath.Join(cacheDirectory, ".*.tmp-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temporary cache files were not cleaned up: %v", matches)
 	}
 }
