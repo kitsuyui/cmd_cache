@@ -43,23 +43,31 @@ type CommandContext struct {
 func (cc CommandContext) WriteToHash(h hash.Hash) {
 	for _, cmd := range cc.Command {
 		io.WriteString(h, cmd)
+		io.WriteString(h, "\x00")
 	}
+	io.WriteString(h, "\x01")
 	for _, text := range cc.Texts {
 		io.WriteString(h, text)
+		io.WriteString(h, "\x00")
 	}
+	io.WriteString(h, "\x01")
 	for _, filename := range cc.Filenames {
 		writeFileToHash(h, filename)
 	}
+	io.WriteString(h, "\x01")
 	for _, envname := range cc.EnvironmentVariableNames {
 		io.WriteString(h, envname)
+		io.WriteString(h, "\x00")
 		if value, ok := os.LookupEnv(envname); ok {
 			io.WriteString(h, value)
 		}
+		io.WriteString(h, "\x00")
 	}
 }
 
 func writeFileToHash(h hash.Hash, filename string) {
 	io.WriteString(h, filename)
+	io.WriteString(h, "\x00")
 	f, err := os.Open(filename)
 	if err != nil {
 		log.Fatal(err)
@@ -68,6 +76,7 @@ func writeFileToHash(h hash.Hash, filename string) {
 	if _, err := io.Copy(h, f); err != nil {
 		log.Fatal(err)
 	}
+	io.WriteString(h, "\x01")
 }
 
 type CommandCache struct {
