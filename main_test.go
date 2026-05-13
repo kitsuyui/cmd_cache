@@ -134,7 +134,7 @@ func TestRunAndCacheTruncatesExistingCacheFiles(t *testing.T) {
 	defer os.RemoveAll(cacheDirectory)
 
 	commandCache := CommandCache{
-		Command:        []string{"sh", "-c", "printf x; printf y >&2; exit 7"},
+		Command:        []string{"sh", "-c", "printf x; printf y >&2"},
 		StatusFilepath: filepath.Join(cacheDirectory, cacheKey),
 		OutFilepath:    filepath.Join(cacheDirectory, cacheKey+"_out"),
 		ErrFilepath:    filepath.Join(cacheDirectory, cacheKey+"_err"),
@@ -154,12 +154,12 @@ func TestRunAndCacheTruncatesExistingCacheFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if exitStatus != 7 {
+	if exitStatus != 0 {
 		t.Fatalf("unexpected exit status: %d", exitStatus)
 	}
 
 	for path, expected := range map[string]string{
-		commandCache.StatusFilepath: "7",
+		commandCache.StatusFilepath: "0",
 		commandCache.OutFilepath:    "x",
 		commandCache.ErrFilepath:    "y",
 	} {
@@ -170,6 +170,28 @@ func TestRunAndCacheTruncatesExistingCacheFiles(t *testing.T) {
 		if string(content) != expected {
 			t.Fatalf("%s = %q, want %q", path, string(content), expected)
 		}
+	}
+}
+
+func TestRunAndCacheDoesNotCacheFailures(t *testing.T) {
+	cacheDirectory := t.TempDir()
+	cacheKey := "cache-key"
+	commandCache := CommandCache{
+		Command:        []string{"sh", "-c", "printf x; printf y >&2; exit 7"},
+		StatusFilepath: filepath.Join(cacheDirectory, cacheKey),
+		OutFilepath:    filepath.Join(cacheDirectory, cacheKey+"_out"),
+		ErrFilepath:    filepath.Join(cacheDirectory, cacheKey+"_err"),
+	}
+
+	exitStatus, err := commandCache.RunAndCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exitStatus != 7 {
+		t.Fatalf("unexpected exit status: %d", exitStatus)
+	}
+	if _, err := os.Stat(commandCache.StatusFilepath); !os.IsNotExist(err) {
+		t.Fatal("status file must not be written for failed commands")
 	}
 }
 

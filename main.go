@@ -138,6 +138,10 @@ func (cc CommandCache) RunAndCache() (int, error) {
 	} else if err != nil {
 		return 1, err
 	}
+	if exitStatus != 0 {
+		// Don't cache failures; the command should be retried on the next invocation.
+		return exitStatus, nil
+	}
 	statusFile, err := os.OpenFile(cc.StatusFilepath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
 		return exitStatus, err
