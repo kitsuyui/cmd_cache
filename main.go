@@ -264,7 +264,7 @@ func main() {
 		exit(1)
 	}
 	if showVersion, _ := opts.Bool("--version"); showVersion {
-		println(version)
+		fmt.Println(version)
 		return
 	}
 	cacheDirectory := opts["--cache-directory"].(string)
