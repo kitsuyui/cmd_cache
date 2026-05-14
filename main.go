@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,7 +39,7 @@ type CommandContext struct {
 	Filenames                []string
 }
 
-func (cc CommandContext) WriteToHash(h hash.Hash) {
+func (cc CommandContext) WriteToHash(h hash.Hash) error {
 	for _, cmd := range cc.Command {
 		io.WriteString(h, cmd)
 		io.WriteString(h, "\x00")
@@ -52,7 +51,9 @@ func (cc CommandContext) WriteToHash(h hash.Hash) {
 	}
 	io.WriteString(h, "\x01")
 	for _, filename := range cc.Filenames {
-		writeFileToHash(h, filename)
+		if err := writeFileToHash(h, filename); err != nil {
+			return err
+		}
 	}
 	io.WriteString(h, "\x01")
 	for _, envname := range cc.EnvironmentVariableNames {
@@ -63,20 +64,22 @@ func (cc CommandContext) WriteToHash(h hash.Hash) {
 		}
 		io.WriteString(h, "\x00")
 	}
+	return nil
 }
 
-func writeFileToHash(h hash.Hash, filename string) {
+func writeFileToHash(h hash.Hash, filename string) error {
 	io.WriteString(h, filename)
 	io.WriteString(h, "\x00")
 	f, err := os.Open(filename)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer f.Close()
 	if _, err := io.Copy(h, f); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	io.WriteString(h, "\x01")
+	return nil
 }
 
 type CommandCache struct {
@@ -282,7 +285,10 @@ func main() {
 	}
 
 	h := sha1.New()
-	commandContext.WriteToHash(h)
+	if err := commandContext.WriteToHash(h); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		exit(1)
+	}
 	cacheKey := hex.EncodeToString(h.Sum(nil))
 
 	commandCache := CommandCache{
