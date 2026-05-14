@@ -260,7 +260,7 @@ var exit = os.Exit
 func main() {
 	opts, err := docopt.ParseDoc(COMMAND_USAGE)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Fprintln(os.Stderr, err)
 		exit(1)
 	}
 	if showVersion, _ := opts.Bool("--version"); showVersion {
@@ -269,7 +269,7 @@ func main() {
 	}
 	cacheDirectory := opts["--cache-directory"].(string)
 	if err := os.MkdirAll(cacheDirectory, 0755); err != nil {
-		fmt.Println(err)
+		fmt.Fprintln(os.Stderr, err)
 		exit(1)
 	}
 

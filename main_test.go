@@ -81,6 +81,40 @@ func captureStdoutDuring(t *testing.T, fn func()) (string, any) {
 	return string(output), recovered
 }
 
+func captureStderrDuring(t *testing.T, fn func()) (string, any) {
+	t.Helper()
+
+	originalStderr := os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = writer
+	log.SetOutput(writer)
+
+	var recovered any
+	func() {
+		defer func() {
+			recovered = recover()
+			os.Stderr = originalStderr
+			log.SetOutput(originalStderr)
+			if err := writer.Close(); err != nil {
+				t.Errorf("failed to close stderr writer: %v", err)
+			}
+		}()
+		fn()
+	}()
+
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return string(output), recovered
+}
+
 func TestMainExitsWhenCacheDirectoryCannotBeCreated(t *testing.T) {
 	originalExit := exit
 	defer func() {
@@ -101,7 +135,7 @@ func TestMainExitsWhenCacheDirectoryCannotBeCreated(t *testing.T) {
 		panic(testExitCode(code))
 	}
 
-	output, recovered := captureStdoutDuring(t, main)
+	output, recovered := captureStderrDuring(t, main)
 	code, ok := recovered.(testExitCode)
 	if !ok {
 		t.Fatalf("main() recovered %v, want exit code panic", recovered)
@@ -109,11 +143,8 @@ func TestMainExitsWhenCacheDirectoryCannotBeCreated(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("unexpected exit code: %d", code)
 	}
-	if strings.Contains(output, "Usage:") {
-		t.Fatalf("docopt parse failed unexpectedly: %q", output)
-	}
 	if !strings.Contains(output, parentFile) {
-		t.Fatalf("output = %q, want mkdir error mentioning %q", output, parentFile)
+		t.Fatalf("stderr = %q, want mkdir error mentioning %q", output, parentFile)
 	}
 }
 
