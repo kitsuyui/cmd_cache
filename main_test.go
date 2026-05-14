@@ -47,6 +47,28 @@ func TestVersion(t *testing.T) {
 	}
 }
 
+func TestMainWritesVersionToStdout(t *testing.T) {
+	originalArgs := os.Args
+	defer func() {
+		os.Args = originalArgs
+	}()
+	originalVersion := version
+	defer func() {
+		version = originalVersion
+	}()
+
+	version = "1.2.3-test"
+	os.Args = []string{"cmd_cache", "--version"}
+
+	output, recovered := captureStdoutDuring(t, main)
+	if recovered != nil {
+		t.Fatalf("main() recovered %v, want nil", recovered)
+	}
+	if output != "1.2.3-test\n" {
+		t.Fatalf("stdout = %q, want %q", output, "1.2.3-test\n")
+	}
+}
+
 type testExitCode int
 
 func captureStdoutDuring(t *testing.T, fn func()) (string, any) {
