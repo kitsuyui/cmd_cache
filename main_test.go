@@ -148,15 +148,17 @@ func TestMainExitsWhenCacheDirectoryCannotBeCreated(t *testing.T) {
 	}
 }
 
-func hashStringFromCommandContext(cc CommandContext) string {
+func hashStringFromCommandContext(t *testing.T, cc CommandContext) string {
+	t.Helper()
 	h := sha1.New()
-	cc.WriteToHash(h)
-	hashString := hex.EncodeToString(h.Sum(nil))
-	return hashString
+	if err := cc.WriteToHash(h); err != nil {
+		t.Fatalf("WriteToHash failed: %v", err)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func TestHashWhenEverythingIsEmpty(t *testing.T) {
-	hashString := hashStringFromCommandContext(CommandContext{
+	hashString := hashStringFromCommandContext(t, CommandContext{
 		Command:                  []string{},
 		Texts:                    []string{},
 		EnvironmentVariableNames: []string{},
@@ -168,7 +170,7 @@ func TestHashWhenEverythingIsEmpty(t *testing.T) {
 }
 
 func TestTextHash(t *testing.T) {
-	hashString := hashStringFromCommandContext(CommandContext{
+	hashString := hashStringFromCommandContext(t, CommandContext{
 		Command:                  []string{},
 		Texts:                    []string{"Hello, World!"},
 		EnvironmentVariableNames: []string{},
@@ -181,7 +183,7 @@ func TestTextHash(t *testing.T) {
 
 func TestEnvHash(t *testing.T) {
 	os.Setenv("LD_LIBRARY_PATH", "/usr/local/lib:/usr/lib")
-	hashString := hashStringFromCommandContext(CommandContext{
+	hashString := hashStringFromCommandContext(t, CommandContext{
 		Command:                  []string{},
 		Texts:                    []string{},
 		EnvironmentVariableNames: []string{"LD_LIBRARY_PATH"},
@@ -199,7 +201,7 @@ func TestFileHash(t *testing.T) {
 	}
 	outFile.Write([]byte("Hello, World!"))
 	defer outFile.Close()
-	hashString := hashStringFromCommandContext(CommandContext{
+	hashString := hashStringFromCommandContext(t, CommandContext{
 		Command:                  []string{},
 		Texts:                    []string{},
 		EnvironmentVariableNames: []string{},
@@ -212,13 +214,13 @@ func TestFileHash(t *testing.T) {
 
 func TestHashCollisionPrevented(t *testing.T) {
 	// "echo" command with "foo" text must differ from "echofoo" command alone.
-	hashCmdAndText := hashStringFromCommandContext(CommandContext{
+	hashCmdAndText := hashStringFromCommandContext(t, CommandContext{
 		Command:                  []string{"echo"},
 		Texts:                    []string{"foo"},
 		EnvironmentVariableNames: []string{},
 		Filenames:                []string{},
 	})
-	hashCmdOnly := hashStringFromCommandContext(CommandContext{
+	hashCmdOnly := hashStringFromCommandContext(t, CommandContext{
 		Command:                  []string{"echofoo"},
 		Texts:                    []string{},
 		EnvironmentVariableNames: []string{},
