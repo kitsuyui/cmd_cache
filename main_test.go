@@ -215,6 +215,53 @@ func TestSomething(t *testing.T) {
 	}
 }
 
+func TestGetOrRunExecutesAndCachesOnMiss(t *testing.T) {
+	cacheDirectory := t.TempDir()
+	cacheKey := "cache-key"
+	commandCache := CommandCache{
+		Command:        []string{"sh", "-c", "echo hello"},
+		StatusFilepath: filepath.Join(cacheDirectory, cacheKey),
+		OutFilepath:    filepath.Join(cacheDirectory, cacheKey+"_out"),
+		ErrFilepath:    filepath.Join(cacheDirectory, cacheKey+"_err"),
+	}
+
+	exitStatus, err := commandCache.GetOrRun()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exitStatus != 0 {
+		t.Fatalf("unexpected exit status: %d", exitStatus)
+	}
+	if _, err := os.Stat(commandCache.StatusFilepath); err != nil {
+		t.Fatalf("status file must exist after GetOrRun: %v", err)
+	}
+}
+
+func TestGetOrRunReplaysCacheOnHit(t *testing.T) {
+	cacheDirectory := t.TempDir()
+	cacheKey := "cache-key"
+	commandCache := CommandCache{
+		Command:        []string{"sh", "-c", "echo cached"},
+		StatusFilepath: filepath.Join(cacheDirectory, cacheKey),
+		OutFilepath:    filepath.Join(cacheDirectory, cacheKey+"_out"),
+		ErrFilepath:    filepath.Join(cacheDirectory, cacheKey+"_err"),
+	}
+
+	// First call: execute and cache.
+	if _, err := commandCache.GetOrRun(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second call: cache hit via double-check path (lock acquired, cache found).
+	exitStatus, err := commandCache.GetOrRun()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exitStatus != 0 {
+		t.Fatalf("unexpected exit status on cache hit: %d", exitStatus)
+	}
+}
+
 func TestRunAndCacheTruncatesExistingCacheFiles(t *testing.T) {
 	cacheDirectory := ".cmd_cache_test"
 	cacheKey := "cache-key"

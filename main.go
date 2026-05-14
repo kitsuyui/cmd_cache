@@ -133,6 +133,39 @@ func (f *cacheTempFile) Rename() error {
 	return nil
 }
 
+// GetOrRun returns the cached result if available. On a cache miss it acquires
+// an exclusive advisory lock on a per-cache-key lock file, re-checks the cache
+// (another process may have populated it while we waited), and runs the command
+// only if the cache is still empty. This prevents multiple concurrent processes
+// from executing the same command (thundering herd / stampede).
+func (cc CommandCache) GetOrRun() (int, error) {
+	// Fast path: read from cache without acquiring a lock.
+	if exitStatus, err := cc.ReplayByCache(); err == nil {
+		return exitStatus, nil
+	}
+
+	lockPath := cc.StatusFilepath + ".lock"
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		// Lock file cannot be opened; fall back to running without a lock.
+		return cc.RunAndCache()
+	}
+	defer lockFile.Close()
+
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		// flock failed; fall back to running without a lock.
+		return cc.RunAndCache()
+	}
+	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+
+	// Double-check: another process may have written the cache while we waited.
+	if exitStatus, err := cc.ReplayByCache(); err == nil {
+		return exitStatus, nil
+	}
+
+	return cc.RunAndCache()
+}
+
 func (cc CommandCache) ReplayByCache() (int, error) {
 	outFile, err := os.Open(cc.OutFilepath)
 	if err != nil {
@@ -259,13 +292,9 @@ func main() {
 		ErrFilepath:    filepath.Join(cacheDirectory, cacheKey+"_err"),
 	}
 
-	var exitStatus int
-	exitStatus, err = commandCache.ReplayByCache()
+	exitStatus, err := commandCache.GetOrRun()
 	if err != nil {
-		exitStatus, err = commandCache.RunAndCache()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-		}
+		fmt.Fprintln(os.Stderr, err)
 	}
 	exit(exitStatus)
 }
