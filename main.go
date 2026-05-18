@@ -60,6 +60,7 @@ func (cc CommandContext) WriteToHash(h hash.Hash) error {
 		io.WriteString(h, envname)
 		io.WriteString(h, "\x00")
 		if value, ok := os.LookupEnv(envname); ok {
+			io.WriteString(h, "\x02") // present marker: distinguishes set-to-empty from not-set
 			io.WriteString(h, value)
 		}
 		io.WriteString(h, "\x00")

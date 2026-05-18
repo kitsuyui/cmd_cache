@@ -214,8 +214,32 @@ func TestEnvHash(t *testing.T) {
 		EnvironmentVariableNames: []string{"LD_LIBRARY_PATH"},
 		Filenames:                []string{},
 	})
-	if hashString != "8475fc388c3fe8f6d3c5b52ab71f8476fff1c1b5" {
+	if hashString != "b2c91fc952edc927a20d1802dcd650c79b0faa4b" {
 		t.Error("Unexpected hash value:", hashString)
+	}
+}
+
+func TestEnvHashAbsentVsEmptyCollisionPrevented(t *testing.T) {
+	// env var set to empty string must produce a different hash than env var not set
+	const testKey = "CMD_CACHE_TEST_ABSENT_EMPTY"
+	_ = os.Unsetenv(testKey)
+	hashNotSet := hashStringFromCommandContext(t, CommandContext{
+		Command:                  []string{},
+		Texts:                    []string{},
+		EnvironmentVariableNames: []string{testKey},
+		Filenames:                []string{},
+	})
+
+	t.Setenv(testKey, "")
+	hashSetToEmpty := hashStringFromCommandContext(t, CommandContext{
+		Command:                  []string{},
+		Texts:                    []string{},
+		EnvironmentVariableNames: []string{testKey},
+		Filenames:                []string{},
+	})
+
+	if hashNotSet == hashSetToEmpty {
+		t.Error("hash collision: env var set to empty must differ from env var not set")
 	}
 }
 
