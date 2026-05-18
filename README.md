@@ -16,6 +16,9 @@ Cache key can be generated with these way:
 - Environment variable (name and value)
 - Text
 
+Repeated `--file`, `--env`, and `--text` inputs are treated as dependency
+sets, so their order does not affect the cache key.
+
 ## Usage
 
 ### Example
