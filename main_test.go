@@ -14,15 +14,18 @@ import (
 )
 
 func TestMain(t *testing.T) {
+	originalExit := exit
+	defer func() { exit = originalExit }()
+	originalArgs := os.Args
+	defer func() { os.Args = originalArgs }()
+
 	exit = func(i int) {
 		if i != 0 {
 			t.Error("exit code must be 0")
 		}
 	}
-	if err := os.RemoveAll(".cmd_cache"); err != nil {
-		panic(err)
-	}
-	os.Args = []string{"cmd_cache", "--text", "something", "--", "ls", "-ahl"}
+	cacheDir := t.TempDir()
+	os.Args = []string{"cmd_cache", "--cache-directory=" + cacheDir, "--text", "something", "--", "ls", "-ahl"}
 	// without cache
 	main()
 	// with cache
@@ -204,7 +207,7 @@ func TestTextHash(t *testing.T) {
 }
 
 func TestEnvHash(t *testing.T) {
-	os.Setenv("LD_LIBRARY_PATH", "/usr/local/lib:/usr/lib")
+	t.Setenv("LD_LIBRARY_PATH", "/usr/local/lib:/usr/lib")
 	hashString := hashStringFromCommandContext(t, CommandContext{
 		Command:                  []string{},
 		Texts:                    []string{},
@@ -254,7 +257,7 @@ func TestHashCollisionPrevented(t *testing.T) {
 }
 
 func TestSomething(t *testing.T) {
-	cacheDirectory := ".cmd_cache"
+	cacheDirectory := t.TempDir()
 	cacheKey := "cache-key"
 	commandCache := CommandCache{
 		Command:        []string{"sh", "-c", "echo 1"},
