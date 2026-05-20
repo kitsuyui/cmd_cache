@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"syscall"
 
@@ -45,18 +46,18 @@ func (cc CommandContext) WriteToHash(h hash.Hash) error {
 		io.WriteString(h, "\x00")
 	}
 	io.WriteString(h, "\x01")
-	for _, text := range cc.Texts {
+	for _, text := range sortedStrings(cc.Texts) {
 		io.WriteString(h, text)
 		io.WriteString(h, "\x00")
 	}
 	io.WriteString(h, "\x01")
-	for _, filename := range cc.Filenames {
+	for _, filename := range sortedStrings(cc.Filenames) {
 		if err := writeFileToHash(h, filename); err != nil {
 			return err
 		}
 	}
 	io.WriteString(h, "\x01")
-	for _, envname := range cc.EnvironmentVariableNames {
+	for _, envname := range sortedStrings(cc.EnvironmentVariableNames) {
 		io.WriteString(h, envname)
 		io.WriteString(h, "\x00")
 		if value, ok := os.LookupEnv(envname); ok {
@@ -66,6 +67,12 @@ func (cc CommandContext) WriteToHash(h hash.Hash) error {
 		io.WriteString(h, "\x00")
 	}
 	return nil
+}
+
+func sortedStrings(values []string) []string {
+	sorted := append([]string(nil), values...)
+	sort.Strings(sorted)
+	return sorted
 }
 
 func writeFileToHash(h hash.Hash, filename string) error {

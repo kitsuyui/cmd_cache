@@ -243,6 +243,59 @@ func TestEnvHashAbsentVsEmptyCollisionPrevented(t *testing.T) {
 	}
 }
 
+func TestDependencyInputOrderDoesNotAffectHash(t *testing.T) {
+	const envA = "CMD_CACHE_TEST_ORDER_A"
+	const envB = "CMD_CACHE_TEST_ORDER_B"
+	t.Setenv(envA, "a")
+	t.Setenv(envB, "b")
+
+	tmpDir := t.TempDir()
+	fileA := filepath.Join(tmpDir, "a.txt")
+	fileB := filepath.Join(tmpDir, "b.txt")
+	if err := os.WriteFile(fileA, []byte("file a"), 0666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("file b"), 0666); err != nil {
+		t.Fatal(err)
+	}
+
+	first := hashStringFromCommandContext(t, CommandContext{
+		Command:                  []string{"sh", "-c", "echo order-sensitive-command"},
+		Texts:                    []string{"beta", "alpha"},
+		EnvironmentVariableNames: []string{envB, envA},
+		Filenames:                []string{fileB, fileA},
+	})
+	second := hashStringFromCommandContext(t, CommandContext{
+		Command:                  []string{"sh", "-c", "echo order-sensitive-command"},
+		Texts:                    []string{"alpha", "beta"},
+		EnvironmentVariableNames: []string{envA, envB},
+		Filenames:                []string{fileA, fileB},
+	})
+
+	if first != second {
+		t.Fatalf("dependency input order changed hash: %s != %s", first, second)
+	}
+}
+
+func TestCommandOrderStillAffectsHash(t *testing.T) {
+	first := hashStringFromCommandContext(t, CommandContext{
+		Command:                  []string{"echo", "hello"},
+		Texts:                    []string{},
+		EnvironmentVariableNames: []string{},
+		Filenames:                []string{},
+	})
+	second := hashStringFromCommandContext(t, CommandContext{
+		Command:                  []string{"hello", "echo"},
+		Texts:                    []string{},
+		EnvironmentVariableNames: []string{},
+		Filenames:                []string{},
+	})
+
+	if first == second {
+		t.Fatal("command order must remain part of the hash")
+	}
+}
+
 func TestFileHash(t *testing.T) {
 	outFile, err := os.OpenFile("build/testfile", os.O_WRONLY|os.O_CREATE, 0666)
 	if err != nil {
