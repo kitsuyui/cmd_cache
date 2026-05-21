@@ -250,8 +250,9 @@ func TestDependencyInputOrderDoesNotAffectHash(t *testing.T) {
 	t.Setenv(envB, "b")
 
 	tmpDir := t.TempDir()
-	fileA := filepath.Join(tmpDir, "a.txt")
-	fileB := filepath.Join(tmpDir, "b.txt")
+	t.Chdir(tmpDir)
+	fileA := "a.txt"
+	fileB := "b.txt"
 	if err := os.WriteFile(fileA, []byte("file a"), 0666); err != nil {
 		t.Fatal(err)
 	}
@@ -311,6 +312,29 @@ func TestFileHash(t *testing.T) {
 	})
 	if hashString != "6d7e43ef5351becf7a79030cfa7325756176674b" {
 		t.Error("Unexpected hash value:", hashString)
+	}
+}
+
+func TestFileHashRejectsParentDirectoryTraversal(t *testing.T) {
+	h := sha1.New()
+	err := writeFileToHash(h, "../outside.txt")
+	if err == nil {
+		t.Fatal("writeFileToHash accepted a dependency path outside the current working directory")
+	}
+	if !strings.Contains(err.Error(), "must not escape the current working directory") {
+		t.Fatalf("error = %q, want current working directory escape message", err)
+	}
+}
+
+func TestFileHashRejectsAbsolutePath(t *testing.T) {
+	h := sha1.New()
+	absolutePath := filepath.Join(t.TempDir(), "dependency.txt")
+	err := writeFileToHash(h, absolutePath)
+	if err == nil {
+		t.Fatal("writeFileToHash accepted an absolute dependency path")
+	}
+	if !strings.Contains(err.Error(), "must be relative to the current working directory") {
+		t.Fatalf("error = %q, want relative path message", err)
 	}
 }
 
