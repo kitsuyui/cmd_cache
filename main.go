@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/docopt/docopt-go"
@@ -22,7 +23,7 @@ Usage:
  cmd_cache (--help | --version)
 
 Arguments:
- FILE      depending file. (e.g. prog.h)
+ FILE      depending file under the current working directory. (e.g. prog.h)
  ENV       depending environment variable. (e.g. LD_LIBRARY_PATH)
  TEXT      text affecting command.
  COMMAND   real command.
@@ -76,6 +77,9 @@ func sortedStrings(values []string) []string {
 }
 
 func writeFileToHash(h hash.Hash, filename string) error {
+	if err := validateDependencyFilename(filename); err != nil {
+		return err
+	}
 	io.WriteString(h, filename)
 	io.WriteString(h, "\x00")
 	f, err := os.Open(filename)
@@ -87,6 +91,20 @@ func writeFileToHash(h hash.Hash, filename string) error {
 		return err
 	}
 	io.WriteString(h, "\x01")
+	return nil
+}
+
+func validateDependencyFilename(filename string) error {
+	if filename == "" {
+		return fmt.Errorf("dependency file path must not be empty")
+	}
+	clean := filepath.Clean(filename)
+	if filepath.IsAbs(clean) {
+		return fmt.Errorf("dependency file path %q must be relative to the current working directory", filename)
+	}
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("dependency file path %q must not escape the current working directory", filename)
+	}
 	return nil
 }
 

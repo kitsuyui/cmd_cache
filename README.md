@@ -12,12 +12,15 @@ When cache doesn't exist, run command and cache it.
 Cache key can be generated with these way:
 
 - Command
-- File content (path and content)
+- File content (relative path and content)
 - Environment variable (name and value)
 - Text
 
 Repeated `--file`, `--env`, and `--text` inputs are treated as dependency
 sets, so their order does not affect the cache key.
+
+`--file` values must be relative paths inside the current working directory.
+Absolute paths and paths that escape the current working directory are rejected.
 
 ## Usage
 
@@ -37,7 +40,7 @@ Usage:
  cmd_cache (--help | --version)
 
 Arguments:
- FILE      depending file. (e.g. prog.h)
+ FILE      depending file under the current working directory. (e.g. prog.h)
  ENV       depending environment variable. (e.g. LD_LIBRARY_PATH)
  TEXT      text affecting command.
  COMMAND   real command.
