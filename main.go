@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha1"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"hash"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/docopt/docopt-go"
@@ -113,6 +115,32 @@ type CommandCache struct {
 	StatusFilepath string
 	OutFilepath    string
 	ErrFilepath    string
+	// MuxFilepath stores an interleaved stdout/stderr stream so ReplayByCache can
+	// reproduce the original write order instead of replaying all stdout then all
+	// stderr. Empty string disables mux writing and falls back to sequential replay.
+	MuxFilepath string
+}
+
+// muxWriter writes framed chunks to a shared multiplexed file.
+// Each Write call emits [stream_id (1 byte)][length (4 bytes big-endian)][data].
+// The mutex is shared between the stdout and stderr writers so that frames from
+// concurrent goroutines are never interleaved mid-frame.
+type muxWriter struct {
+	mu     *sync.Mutex
+	w      io.Writer
+	stream byte // 1 = stdout, 2 = stderr
+}
+
+func (m *muxWriter) Write(p []byte) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var header [5]byte
+	header[0] = m.stream
+	binary.BigEndian.PutUint32(header[1:], uint32(len(p)))
+	if _, err := m.w.Write(header[:]); err != nil {
+		return 0, err
+	}
+	return m.w.Write(p)
 }
 
 type cacheTempFile struct {
@@ -219,6 +247,15 @@ func (cc CommandCache) ReplayByCache() (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("invalid cached exit status in %s (%q): %w", cc.StatusFilepath, string(exitStatusText), err)
 	}
+	// Prefer the mux file when available: it preserves the original stdout/stderr
+	// interleaving order captured during RunAndCache. Old caches without a mux
+	// file fall back to the sequential (all-stdout-then-all-stderr) path below.
+	if cc.MuxFilepath != "" {
+		if muxFile, err := os.Open(cc.MuxFilepath); err == nil {
+			defer muxFile.Close()
+			return exitStatus, replayMux(muxFile)
+		}
+	}
 	if _, err := io.Copy(os.Stdout, outFile); err != nil {
 		return 0, err
 	}
@@ -226,6 +263,36 @@ func (cc CommandCache) ReplayByCache() (int, error) {
 		return 0, err
 	}
 	return exitStatus, nil
+}
+
+// replayMux reads a mux stream written by muxWriter and dispatches each frame
+// to os.Stdout (stream_id=1) or os.Stderr (stream_id=2).
+func replayMux(r io.Reader) error {
+	var header [5]byte
+	for {
+		if _, err := io.ReadFull(r, header[:]); err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return fmt.Errorf("reading mux header: %w", err)
+		}
+		stream := header[0]
+		length := binary.BigEndian.Uint32(header[1:])
+		data := make([]byte, length)
+		if _, err := io.ReadFull(r, data); err != nil {
+			return fmt.Errorf("reading mux data: %w", err)
+		}
+		switch stream {
+		case 1:
+			if _, err := os.Stdout.Write(data); err != nil {
+				return err
+			}
+		case 2:
+			if _, err := os.Stderr.Write(data); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 func (cc CommandCache) RunAndCache() (int, error) {
@@ -239,8 +306,25 @@ func (cc CommandCache) RunAndCache() (int, error) {
 		return 1, err
 	}
 	defer errFile.Remove()
-	outWriter := io.MultiWriter(outFile.file, os.Stdout)
-	errWriter := io.MultiWriter(errFile.file, os.Stderr)
+
+	// Create a mux file to record stdout/stderr in original write order so that
+	// ReplayByCache can reproduce the interleaving instead of replaying all
+	// stdout before all stderr.
+	var muxMu sync.Mutex
+	var muxFile *cacheTempFile
+	outWriters := []io.Writer{outFile.file, os.Stdout}
+	errWriters := []io.Writer{errFile.file, os.Stderr}
+	if cc.MuxFilepath != "" {
+		muxFile, err = newCacheTempFile(cc.MuxFilepath)
+		if err != nil {
+			return 1, err
+		}
+		defer muxFile.Remove()
+		outWriters = append(outWriters, &muxWriter{mu: &muxMu, w: muxFile.file, stream: 1})
+		errWriters = append(errWriters, &muxWriter{mu: &muxMu, w: muxFile.file, stream: 2})
+	}
+	outWriter := io.MultiWriter(outWriters...)
+	errWriter := io.MultiWriter(errWriters...)
 
 	commands := cc.Command
 	cmd := exec.Command(commands[0], commands[1:]...)
@@ -280,6 +364,11 @@ func (cc CommandCache) RunAndCache() (int, error) {
 	}
 	if err := statusFile.Rename(); err != nil {
 		return exitStatus, err
+	}
+	if muxFile != nil {
+		if err := muxFile.Rename(); err != nil {
+			return exitStatus, err
+		}
 	}
 	return exitStatus, nil
 }
@@ -323,6 +412,7 @@ func main() {
 		StatusFilepath: filepath.Join(cacheDirectory, cacheKey),
 		OutFilepath:    filepath.Join(cacheDirectory, cacheKey+"_out"),
 		ErrFilepath:    filepath.Join(cacheDirectory, cacheKey+"_err"),
+		MuxFilepath:    filepath.Join(cacheDirectory, cacheKey+"_mux"),
 	}
 
 	exitStatus, err := commandCache.GetOrRun()

@@ -549,6 +549,73 @@ func TestRunAndCacheReturnsCommandStartError(t *testing.T) {
 	assertNoCacheTempFiles(t, cacheDirectory)
 }
 
+func TestRunAndCacheCreatesMuxFileAndReplayPreservesStreams(t *testing.T) {
+	cacheDirectory := t.TempDir()
+	cacheKey := "mux-test"
+	commandCache := CommandCache{
+		Command:        []string{"sh", "-c", "printf out; printf err >&2"},
+		StatusFilepath: filepath.Join(cacheDirectory, cacheKey),
+		OutFilepath:    filepath.Join(cacheDirectory, cacheKey+"_out"),
+		ErrFilepath:    filepath.Join(cacheDirectory, cacheKey+"_err"),
+		MuxFilepath:    filepath.Join(cacheDirectory, cacheKey+"_mux"),
+	}
+
+	if _, err := commandCache.RunAndCache(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(commandCache.MuxFilepath); err != nil {
+		t.Fatal("mux file must exist after RunAndCache:", err)
+	}
+	assertNoCacheTempFiles(t, cacheDirectory)
+
+	// ReplayByCache must use the mux file and deliver correct stdout/stderr content.
+	stdout, _ := captureStdoutDuring(t, func() {
+		stderr, _ := captureStderrDuring(t, func() {
+			if _, err := commandCache.ReplayByCache(); err != nil {
+				t.Errorf("ReplayByCache failed: %v", err)
+			}
+		})
+		if stderr != "err" {
+			t.Errorf("stderr = %q, want %q", stderr, "err")
+		}
+	})
+	if stdout != "out" {
+		t.Errorf("stdout = %q, want %q", stdout, "out")
+	}
+}
+
+func TestReplayByCacheFallsBackToSequentialWithoutMuxFile(t *testing.T) {
+	cacheDirectory := t.TempDir()
+	cacheKey := "no-mux-test"
+	commandCache := CommandCache{
+		Command:        []string{"sh", "-c", "printf old-out; printf old-err >&2"},
+		StatusFilepath: filepath.Join(cacheDirectory, cacheKey),
+		OutFilepath:    filepath.Join(cacheDirectory, cacheKey+"_out"),
+		ErrFilepath:    filepath.Join(cacheDirectory, cacheKey+"_err"),
+		MuxFilepath:    filepath.Join(cacheDirectory, cacheKey+"_mux"),
+	}
+
+	// Write old-format cache files (no mux file).
+	for path, content := range map[string]string{
+		commandCache.StatusFilepath: "0",
+		commandCache.OutFilepath:    "old-out",
+		commandCache.ErrFilepath:    "old-err",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0666); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// ReplayByCache must fall back to stdout-then-stderr without error.
+	exitStatus, err := commandCache.ReplayByCache()
+	if err != nil {
+		t.Fatal("ReplayByCache failed on old-format cache:", err)
+	}
+	if exitStatus != 0 {
+		t.Fatalf("unexpected exit status: %d", exitStatus)
+	}
+}
+
 func assertNoCacheTempFiles(t *testing.T, cacheDirectory string) {
 	t.Helper()
 
