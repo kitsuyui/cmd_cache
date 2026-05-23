@@ -250,8 +250,9 @@ func (cc CommandCache) RunAndCache() (int, error) {
 	err = cmd.Run()
 	var exitStatus int
 	if err2, ok := err.(*exec.ExitError); ok {
-		if s, ok := err2.Sys().(syscall.WaitStatus); ok {
-			exitStatus = s.ExitStatus()
+		exitStatus = err2.ExitCode()
+		if exitStatus == -1 {
+			exitStatus = 1 // signal-terminated; no numeric exit code available
 		}
 	} else if err != nil {
 		return 1, err
