@@ -22,6 +22,26 @@ sets, so their order does not affect the cache key.
 `--file` values must be relative paths inside the current working directory.
 Absolute paths and paths that escape the current working directory are rejected.
 
+## Environment variable inheritance
+
+The cache key only includes the environment variables listed with `--env`.
+However, the wrapped command inherits the **entire** process environment when
+it runs — not just the `--env` variables.
+
+This means variables like `PATH`, `HOME`, `LANG`, and `TZ` silently affect
+which binary is resolved and how the command behaves, even though they are
+not part of the cache key.
+
+If any unlisted environment variable affects the command's output, add it
+with `--env` to include it in the cache key:
+
+```sh
+cmd_cache --env PATH --env LANG -- my-command
+```
+
+Shared cache directories across machines or CI environments with different
+`PATH` or locale settings can produce stale replays from a cache hit.
+
 ## Usage
 
 ### Example
