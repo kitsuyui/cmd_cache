@@ -244,6 +244,9 @@ func (cc CommandCache) RunAndCache() (int, error) {
 
 	commands := cc.Command
 	cmd := exec.Command(commands[0], commands[1:]...)
+	// Pass the full process environment so commands can resolve binaries via PATH
+	// and read user config via HOME. Only --env variables are in the cache key;
+	// callers must list any env var that affects output.
 	cmd.Env = os.Environ()
 	cmd.Stdout = outWriter
 	cmd.Stderr = errWriter
