@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	docopt "github.com/docopt/docopt-go"
 )
@@ -613,6 +614,226 @@ func TestReplayByCacheFallsBackToSequentialWithoutMuxFile(t *testing.T) {
 	}
 	if exitStatus != 0 {
 		t.Fatalf("unexpected exit status: %d", exitStatus)
+	}
+}
+
+func TestParseMaxCacheEntries(t *testing.T) {
+	for input, expected := range map[string]int{
+		"0":    0,
+		"1":    1,
+		"1024": 1024,
+	} {
+		actual, err := parseMaxCacheEntries(input)
+		if err != nil {
+			t.Fatalf("parseMaxCacheEntries(%q) returned error: %v", input, err)
+		}
+		if actual != expected {
+			t.Fatalf("parseMaxCacheEntries(%q) = %d, want %d", input, actual, expected)
+		}
+	}
+
+	for _, input := range []string{"", "-1", "abc"} {
+		if _, err := parseMaxCacheEntries(input); err == nil {
+			t.Fatalf("parseMaxCacheEntries(%q) returned nil error", input)
+		}
+	}
+}
+
+func TestIsCacheKey(t *testing.T) {
+	validKey := "0123456789abcdef0123456789abcdef01234567"
+	if !isCacheKey(validKey) {
+		t.Fatalf("isCacheKey(%q) = false, want true", validKey)
+	}
+
+	for _, input := range []string{
+		"short",
+		"0123456789abcdef0123456789abcdef0123456g",
+		"0123456789ABCDEF0123456789abcdef01234567",
+		"cache-key",
+	} {
+		if isCacheKey(input) {
+			t.Fatalf("isCacheKey(%q) = true, want false", input)
+		}
+	}
+}
+
+func TestMainRejectsInvalidMaxCacheEntries(t *testing.T) {
+	originalExit := exit
+	defer func() {
+		exit = originalExit
+	}()
+	originalArgs := os.Args
+	defer func() {
+		os.Args = originalArgs
+	}()
+
+	os.Args = []string{"cmd_cache", "--max-cache-entries=-1", "--", "sh", "-c", "echo should-not-run"}
+	exit = func(code int) {
+		panic(testExitCode(code))
+	}
+
+	output, recovered := captureStderrDuring(t, main)
+	code, ok := recovered.(testExitCode)
+	if !ok {
+		t.Fatalf("main() recovered %v, want exit code panic", recovered)
+	}
+	if code != 1 {
+		t.Fatalf("unexpected exit code: %d", code)
+	}
+	if !strings.Contains(output, "--max-cache-entries must be a non-negative integer") {
+		t.Fatalf("stderr = %q, want max-cache-entries validation error", output)
+	}
+}
+
+func TestPruneCacheEntriesRemovesOldestCompleteEntries(t *testing.T) {
+	cacheDirectory := t.TempDir()
+	oldTime := time.Unix(100, 0)
+	middleTime := time.Unix(200, 0)
+	newTime := time.Unix(300, 0)
+	oldKey := "0000000000000000000000000000000000000001"
+	middleKey := "0000000000000000000000000000000000000002"
+	newKey := "0000000000000000000000000000000000000003"
+
+	writeCompleteCacheEntry(t, cacheDirectory, oldKey, oldTime)
+	writeCompleteCacheEntry(t, cacheDirectory, middleKey, middleTime)
+	writeCompleteCacheEntry(t, cacheDirectory, newKey, newTime)
+
+	if err := pruneCacheEntries(cacheDirectory, 2); err != nil {
+		t.Fatal(err)
+	}
+
+	assertCacheEntryRemoved(t, cacheDirectory, oldKey)
+	assertCacheEntryExists(t, cacheDirectory, middleKey)
+	assertCacheEntryExists(t, cacheDirectory, newKey)
+
+	entries, err := collectCompleteCacheEntries(cacheDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("complete entries = %d, want 2", len(entries))
+	}
+}
+
+func TestPruneCacheEntriesIgnoresIncompleteEntries(t *testing.T) {
+	cacheDirectory := t.TempDir()
+	oldCompleteKey := "0000000000000000000000000000000000000001"
+	newCompleteKey := "0000000000000000000000000000000000000002"
+	incompleteKey := "0000000000000000000000000000000000000003"
+	writeCompleteCacheEntry(t, cacheDirectory, oldCompleteKey, time.Unix(100, 0))
+	writeCompleteCacheEntry(t, cacheDirectory, newCompleteKey, time.Unix(300, 0))
+	writePartialCacheEntry(t, cacheDirectory, incompleteKey, time.Unix(1, 0))
+
+	if err := pruneCacheEntries(cacheDirectory, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	assertCacheEntryRemoved(t, cacheDirectory, oldCompleteKey)
+	assertCacheEntryExists(t, cacheDirectory, newCompleteKey)
+	assertPartialCacheEntryExists(t, cacheDirectory, incompleteKey)
+}
+
+func TestPruneCacheEntriesDisabledKeepsCompleteEntries(t *testing.T) {
+	cacheDirectory := t.TempDir()
+	oldKey := "0000000000000000000000000000000000000001"
+	newKey := "0000000000000000000000000000000000000002"
+	writeCompleteCacheEntry(t, cacheDirectory, oldKey, time.Unix(100, 0))
+	writeCompleteCacheEntry(t, cacheDirectory, newKey, time.Unix(200, 0))
+
+	if err := pruneCacheEntries(cacheDirectory, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	assertCacheEntryExists(t, cacheDirectory, oldKey)
+	assertCacheEntryExists(t, cacheDirectory, newKey)
+}
+
+func TestPruneCacheEntriesIgnoresNonCacheFileGroups(t *testing.T) {
+	cacheDirectory := t.TempDir()
+	oldKey := "0000000000000000000000000000000000000001"
+	newKey := "0000000000000000000000000000000000000002"
+	writeCompleteCacheEntry(t, cacheDirectory, oldKey, time.Unix(100, 0))
+	writeCompleteCacheEntry(t, cacheDirectory, newKey, time.Unix(200, 0))
+	writeCompleteCacheEntry(t, cacheDirectory, "not-a-cache-key", time.Unix(1, 0))
+
+	if err := pruneCacheEntries(cacheDirectory, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	assertCacheEntryRemoved(t, cacheDirectory, oldKey)
+	assertCacheEntryExists(t, cacheDirectory, newKey)
+	assertCacheEntryExists(t, cacheDirectory, "not-a-cache-key")
+}
+
+func writeCompleteCacheEntry(t *testing.T, cacheDirectory, key string, modTime time.Time) {
+	t.Helper()
+
+	for suffix, content := range map[string]string{
+		"":      "0",
+		"_out":  "stdout",
+		"_err":  "stderr",
+		"_mux":  "mux",
+		".lock": "",
+	} {
+		path := filepath.Join(cacheDirectory, key+suffix)
+		if err := os.WriteFile(path, []byte(content), 0666); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, modTime, modTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func writePartialCacheEntry(t *testing.T, cacheDirectory, key string, modTime time.Time) {
+	t.Helper()
+
+	for suffix, content := range map[string]string{
+		"":     "0",
+		"_out": "stdout",
+	} {
+		path := filepath.Join(cacheDirectory, key+suffix)
+		if err := os.WriteFile(path, []byte(content), 0666); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, modTime, modTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func assertCacheEntryExists(t *testing.T, cacheDirectory, key string) {
+	t.Helper()
+
+	for _, suffix := range []string{"", "_out", "_err", "_mux", ".lock"} {
+		if _, err := os.Stat(filepath.Join(cacheDirectory, key+suffix)); err != nil {
+			t.Fatalf("cache entry %s%s should exist: %v", key, suffix, err)
+		}
+	}
+}
+
+func assertCacheEntryRemoved(t *testing.T, cacheDirectory, key string) {
+	t.Helper()
+
+	for _, suffix := range []string{"", "_out", "_err", "_mux", ".lock"} {
+		if _, err := os.Stat(filepath.Join(cacheDirectory, key+suffix)); !os.IsNotExist(err) {
+			t.Fatalf("cache entry %s%s should be removed: %v", key, suffix, err)
+		}
+	}
+}
+
+func assertPartialCacheEntryExists(t *testing.T, cacheDirectory, key string) {
+	t.Helper()
+
+	for _, suffix := range []string{"", "_out"} {
+		if _, err := os.Stat(filepath.Join(cacheDirectory, key+suffix)); err != nil {
+			t.Fatalf("partial cache entry %s%s should exist: %v", key, suffix, err)
+		}
+	}
+	for _, suffix := range []string{"_err", "_mux", ".lock"} {
+		if _, err := os.Stat(filepath.Join(cacheDirectory, key+suffix)); !os.IsNotExist(err) {
+			t.Fatalf("partial cache entry %s%s should not exist: %v", key, suffix, err)
+		}
 	}
 }
 

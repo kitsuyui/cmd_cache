@@ -22,6 +22,10 @@ sets, so their order does not affect the cache key.
 `--file` values must be relative paths inside the current working directory.
 Absolute paths and paths that escape the current working directory are rejected.
 
+By default, `cmd_cache` keeps the newest 1024 complete cache entries in the
+cache directory and prunes older entries after each run. Set
+`--max-cache-entries=0` to disable pruning.
+
 ## Environment variable inheritance
 
 The cache key only includes the environment variables listed with `--env`.
@@ -56,7 +60,7 @@ $ cmd_cache --file depedingfile.go --env GOPATH -- go build
 cmd_cache
 
 Usage:
- cmd_cache [--cache-directory=DIRECTORY] [(--file FILE | --env ENV | --text TEXT)...] -- [COMMAND...]
+ cmd_cache [--cache-directory=DIRECTORY] [--max-cache-entries=COUNT] [(--file FILE | --env ENV | --text TEXT)...] -- [COMMAND...]
  cmd_cache (--help | --version)
 
 Arguments:
@@ -69,6 +73,7 @@ Options:
  -h --help               						 Show this screen.
  -V --version            						 Show version.
  --cache-directory=DIRECTORY    Cache directory [default: .cmd_cache]
+ --max-cache-entries=COUNT      Maximum complete cache entries to keep; 0 disables pruning [default: 1024]
 ```
 
 # Build
