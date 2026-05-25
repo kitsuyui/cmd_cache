@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -15,13 +16,14 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/docopt/docopt-go"
 )
 
 const COMMAND_USAGE = `cmd_cache
 Usage:
- cmd_cache [--cache-directory=DIRECTORY] [(--file FILE | --env ENV | --text TEXT)...] -- [COMMAND...]
+ cmd_cache [--cache-directory=DIRECTORY] [--max-cache-entries=COUNT] [(--file FILE | --env ENV | --text TEXT)...] -- [COMMAND...]
  cmd_cache (--help | --version)
 
 Arguments:
@@ -34,6 +36,7 @@ Options:
  -h --help               						 Show this screen.
  -V --version            						 Show version.
  --cache-directory=DIRECTORY    Cache directory [default: .cmd_cache]
+ --max-cache-entries=COUNT      Maximum complete cache entries to keep; 0 disables pruning [default: 1024]
 `
 
 type CommandContext struct {
@@ -119,6 +122,16 @@ type CommandCache struct {
 	// reproduce the original write order instead of replaying all stdout then all
 	// stderr. Empty string disables mux writing and falls back to sequential replay.
 	MuxFilepath string
+}
+
+type cacheEntry struct {
+	Key            string
+	StatusFilepath string
+	OutFilepath    string
+	ErrFilepath    string
+	MuxFilepath    string
+	LockFilepath   string
+	ModTime        time.Time
 }
 
 // muxWriter writes framed chunks to a shared multiplexed file.
@@ -376,6 +389,114 @@ func (cc CommandCache) RunAndCache() (int, error) {
 	return exitStatus, nil
 }
 
+func parseMaxCacheEntries(value string) (int, error) {
+	maxCacheEntries, err := strconv.Atoi(value)
+	if err != nil || maxCacheEntries < 0 {
+		return 0, fmt.Errorf("--max-cache-entries must be a non-negative integer: %q", value)
+	}
+	return maxCacheEntries, nil
+}
+
+func isCacheKey(name string) bool {
+	if len(name) != sha1.Size*2 {
+		return false
+	}
+	for _, r := range name {
+		if !('0' <= r && r <= '9') && !('a' <= r && r <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func collectCompleteCacheEntries(cacheDirectory string) ([]cacheEntry, error) {
+	dirEntries, err := os.ReadDir(cacheDirectory)
+	if err != nil {
+		return nil, err
+	}
+
+	entries := make([]cacheEntry, 0, len(dirEntries))
+	for _, dirEntry := range dirEntries {
+		if dirEntry.IsDir() {
+			continue
+		}
+		key := dirEntry.Name()
+		if !isCacheKey(key) ||
+			strings.HasPrefix(key, ".") ||
+			strings.HasSuffix(key, "_out") ||
+			strings.HasSuffix(key, "_err") ||
+			strings.HasSuffix(key, "_mux") ||
+			strings.HasSuffix(key, ".lock") {
+			continue
+		}
+
+		statusPath := filepath.Join(cacheDirectory, key)
+		outPath := filepath.Join(cacheDirectory, key+"_out")
+		errPath := filepath.Join(cacheDirectory, key+"_err")
+		statusInfo, err := dirEntry.Info()
+		if err != nil {
+			continue
+		}
+		outInfo, err := os.Stat(outPath)
+		if err != nil {
+			continue
+		}
+		errInfo, err := os.Stat(errPath)
+		if err != nil {
+			continue
+		}
+
+		modTime := statusInfo.ModTime()
+		for _, info := range []os.FileInfo{outInfo, errInfo} {
+			if info.ModTime().After(modTime) {
+				modTime = info.ModTime()
+			}
+		}
+
+		entries = append(entries, cacheEntry{
+			Key:            key,
+			StatusFilepath: statusPath,
+			OutFilepath:    outPath,
+			ErrFilepath:    errPath,
+			MuxFilepath:    filepath.Join(cacheDirectory, key+"_mux"),
+			LockFilepath:   statusPath + ".lock",
+			ModTime:        modTime,
+		})
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].ModTime.Equal(entries[j].ModTime) {
+			return entries[i].Key < entries[j].Key
+		}
+		return entries[i].ModTime.Before(entries[j].ModTime)
+	})
+	return entries, nil
+}
+
+func pruneCacheEntries(cacheDirectory string, maxEntries int) error {
+	if maxEntries <= 0 {
+		return nil
+	}
+
+	entries, err := collectCompleteCacheEntries(cacheDirectory)
+	if err != nil {
+		return err
+	}
+	if len(entries) <= maxEntries {
+		return nil
+	}
+
+	var errs []error
+	for _, entry := range entries[:len(entries)-maxEntries] {
+		for _, path := range []string{entry.StatusFilepath, entry.OutFilepath, entry.ErrFilepath, entry.MuxFilepath, entry.LockFilepath} {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
 var version string
 var exit = os.Exit
 
@@ -390,6 +511,11 @@ func main() {
 		return
 	}
 	cacheDirectory := opts["--cache-directory"].(string)
+	maxCacheEntries, err := parseMaxCacheEntries(opts["--max-cache-entries"].(string))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		exit(1)
+	}
 	if err := os.MkdirAll(cacheDirectory, 0755); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		exit(1)
@@ -421,6 +547,9 @@ func main() {
 	exitStatus, err := commandCache.GetOrRun()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+	}
+	if pruneErr := pruneCacheEntries(cacheDirectory, maxCacheEntries); pruneErr != nil {
+		fmt.Fprintln(os.Stderr, pruneErr)
 	}
 	exit(exitStatus)
 }
