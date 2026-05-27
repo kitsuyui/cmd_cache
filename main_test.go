@@ -555,6 +555,38 @@ func TestReplayByCacheNoOutputOnInvalidStatus(t *testing.T) {
 	}
 }
 
+func TestReplayByCacheNoStdoutWhenErrFileMissing(t *testing.T) {
+	// When _err is absent the replay must fail without emitting any stdout.
+	// Before the buffering fix, io.Copy to stdout succeeded before the
+	// subsequent _err open failed, leaving stdout partially replayed and
+	// causing RunAndCache to produce a duplicate on fallback.
+	cacheDirectory := t.TempDir()
+	cacheKey := "cache-key"
+	commandCache := CommandCache{
+		Command:        []string{"sh", "-c", "echo unreachable"},
+		StatusFilepath: filepath.Join(cacheDirectory, cacheKey),
+		OutFilepath:    filepath.Join(cacheDirectory, cacheKey+"_out"),
+		ErrFilepath:    filepath.Join(cacheDirectory, cacheKey+"_err"),
+	}
+
+	for path, value := range map[string]string{
+		commandCache.StatusFilepath: "0",
+		commandCache.OutFilepath:    "cached stdout content",
+		// ErrFilepath intentionally absent
+	} {
+		if err := os.WriteFile(path, []byte(value), 0666); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stdout, _ := captureStdoutDuring(t, func() {
+		_, _ = commandCache.ReplayByCache()
+	})
+	if stdout != "" {
+		t.Fatalf("ReplayByCache() wrote %q to stdout when err file was missing", stdout)
+	}
+}
+
 func TestRunAndCacheReturnsCommandStartError(t *testing.T) {
 	cacheDirectory := t.TempDir()
 	cacheKey := "cache-key"
