@@ -261,20 +261,21 @@ func (cc CommandCache) ReplayByCache() (int, error) {
 			return exitStatus, replayMux(muxFile)
 		}
 	}
-	outFile, err := os.Open(cc.OutFilepath)
+	// Buffer both output files before writing. If either read fails no bytes
+	// are written to stdout or stderr, so a fallback to RunAndCache cannot
+	// produce duplicate output.
+	outBuf, err := os.ReadFile(cc.OutFilepath)
 	if err != nil {
 		return 0, err
 	}
-	defer outFile.Close()
-	errFile, err := os.Open(cc.ErrFilepath)
+	errBuf, err := os.ReadFile(cc.ErrFilepath)
 	if err != nil {
 		return 0, err
 	}
-	defer errFile.Close()
-	if _, err := io.Copy(os.Stdout, outFile); err != nil {
+	if _, err := os.Stdout.Write(outBuf); err != nil {
 		return 0, err
 	}
-	if _, err := io.Copy(os.Stderr, errFile); err != nil {
+	if _, err := os.Stderr.Write(errBuf); err != nil {
 		return 0, err
 	}
 	return exitStatus, nil
