@@ -237,16 +237,8 @@ func (cc CommandCache) GetOrRun() (int, error) {
 }
 
 func (cc CommandCache) ReplayByCache() (int, error) {
-	outFile, err := os.Open(cc.OutFilepath)
-	if err != nil {
-		return 0, err
-	}
-	defer outFile.Close()
-	errFile, err := os.Open(cc.ErrFilepath)
-	if err != nil {
-		return 0, err
-	}
-	defer errFile.Close()
+	// Check the status file first: if it is absent or invalid, avoid opening
+	// the output files unnecessarily (cache-miss is the common case).
 	statusFile, err := os.Open(cc.StatusFilepath)
 	if err != nil {
 		return 0, err
@@ -269,6 +261,16 @@ func (cc CommandCache) ReplayByCache() (int, error) {
 			return exitStatus, replayMux(muxFile)
 		}
 	}
+	outFile, err := os.Open(cc.OutFilepath)
+	if err != nil {
+		return 0, err
+	}
+	defer outFile.Close()
+	errFile, err := os.Open(cc.ErrFilepath)
+	if err != nil {
+		return 0, err
+	}
+	defer errFile.Close()
 	if _, err := io.Copy(os.Stdout, outFile); err != nil {
 		return 0, err
 	}

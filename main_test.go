@@ -527,6 +527,34 @@ func TestReplayByCacheRejectsInvalidStatus(t *testing.T) {
 	}
 }
 
+func TestReplayByCacheNoOutputOnInvalidStatus(t *testing.T) {
+	cacheDirectory := t.TempDir()
+	cacheKey := "cache-key"
+	commandCache := CommandCache{
+		Command:        []string{"sh", "-c", "echo unreachable"},
+		StatusFilepath: filepath.Join(cacheDirectory, cacheKey),
+		OutFilepath:    filepath.Join(cacheDirectory, cacheKey+"_out"),
+		ErrFilepath:    filepath.Join(cacheDirectory, cacheKey+"_err"),
+	}
+
+	for path, value := range map[string]string{
+		commandCache.StatusFilepath: "not-a-status",
+		commandCache.OutFilepath:    "cached stdout",
+		commandCache.ErrFilepath:    "cached stderr",
+	} {
+		if err := os.WriteFile(path, []byte(value), 0666); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stdout, _ := captureStdoutDuring(t, func() {
+		_, _ = commandCache.ReplayByCache()
+	})
+	if stdout != "" {
+		t.Fatalf("ReplayByCache() wrote %q to stdout before status validation", stdout)
+	}
+}
+
 func TestRunAndCacheReturnsCommandStartError(t *testing.T) {
 	cacheDirectory := t.TempDir()
 	cacheKey := "cache-key"
