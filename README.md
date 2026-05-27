@@ -46,6 +46,26 @@ cmd_cache --env PATH --env LANG -- my-command
 Shared cache directories across machines or CI environments with different
 `PATH` or locale settings can produce stale replays from a cache hit.
 
+## Time-dependent commands
+
+`cmd_cache` does not expire entries by time. There is no TTL, `--max-age`, or
+date-based cache invalidation option. A cache hit is replayed until the command,
+file dependencies, selected environment variables, or `--text` inputs produce a
+different cache key, or until cache pruning removes the entry.
+
+If the wrapped command changes output over time, include the intended time
+window in the cache key explicitly:
+
+```sh
+cmd_cache --text "$(date -u +%Y-%m-%d)" -- curl https://example.com/daily.json
+```
+
+Prefer UTC or another explicitly chosen timezone for date keys. Plain
+`date +%Y-%m-%d` uses the local timezone, so machines in different timezones can
+create different daily cache entries while sharing the same cache directory.
+If the command itself depends on local time or `TZ`, include that environment
+variable with `--env TZ` or encode the chosen timezone in `--text`.
+
 ## Usage
 
 ### Example
