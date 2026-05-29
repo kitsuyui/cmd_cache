@@ -26,6 +26,12 @@ By default, `cmd_cache` keeps the newest 1024 complete cache entries in the
 cache directory and prunes older entries after each run. Set
 `--max-cache-entries=0` to disable pruning.
 
+## Cache compatibility
+
+New cache status files include a `cmd_cache status v1` header before the exit
+status. Existing cache entries that contain only a numeric exit status are still
+accepted for backward compatibility.
+
 ## Environment variable inheritance
 
 The cache key only includes the environment variables listed with `--env`.

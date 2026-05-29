@@ -39,6 +39,8 @@ Options:
  --max-cache-entries=COUNT      Maximum complete cache entries to keep; 0 disables pruning [default: 1024]
 `
 
+const cacheStatusHeader = "cmd_cache status v1\n"
+
 type CommandContext struct {
 	Command                  []string
 	Texts                    []string
@@ -248,7 +250,7 @@ func (cc CommandCache) ReplayByCache() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	exitStatus, err := strconv.Atoi(string(exitStatusText))
+	exitStatus, err := parseCachedExitStatus(exitStatusText)
 	if err != nil {
 		return 0, fmt.Errorf("invalid cached exit status in %s (%q): %w", cc.StatusFilepath, string(exitStatusText), err)
 	}
@@ -311,6 +313,18 @@ func replayMux(r io.Reader) error {
 	}
 }
 
+func parseCachedExitStatus(content []byte) (int, error) {
+	text := string(content)
+	if strings.HasPrefix(text, cacheStatusHeader) {
+		return strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(text, cacheStatusHeader), "\n"))
+	}
+	return strconv.Atoi(text)
+}
+
+func formatCachedExitStatus(exitStatus int) []byte {
+	return []byte(cacheStatusHeader + strconv.Itoa(exitStatus) + "\n")
+}
+
 func (cc CommandCache) RunAndCache() (int, error) {
 	outFile, err := newCacheTempFile(cc.OutFilepath)
 	if err != nil {
@@ -369,7 +383,7 @@ func (cc CommandCache) RunAndCache() (int, error) {
 		return exitStatus, err
 	}
 	defer statusFile.Remove()
-	if _, err := statusFile.file.Write([]byte(strconv.Itoa(exitStatus))); err != nil {
+	if _, err := statusFile.file.Write(formatCachedExitStatus(exitStatus)); err != nil {
 		return exitStatus, err
 	}
 	if err := os.Remove(cc.StatusFilepath); err != nil && !os.IsNotExist(err) {

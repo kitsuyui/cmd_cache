@@ -456,7 +456,7 @@ func TestRunAndCacheTruncatesExistingCacheFiles(t *testing.T) {
 	}
 
 	for path, expected := range map[string]string{
-		commandCache.StatusFilepath: "0",
+		commandCache.StatusFilepath: string(formatCachedExitStatus(0)),
 		commandCache.OutFilepath:    "x",
 		commandCache.ErrFilepath:    "y",
 	} {
@@ -469,6 +469,33 @@ func TestRunAndCacheTruncatesExistingCacheFiles(t *testing.T) {
 		}
 	}
 	assertNoCacheTempFiles(t, cacheDirectory)
+}
+
+func TestParseCachedExitStatusAcceptsVersionedStatus(t *testing.T) {
+	exitStatus, err := parseCachedExitStatus(formatCachedExitStatus(23))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exitStatus != 23 {
+		t.Fatalf("exit status = %d, want 23", exitStatus)
+	}
+}
+
+func TestParseCachedExitStatusAcceptsLegacyStatus(t *testing.T) {
+	exitStatus, err := parseCachedExitStatus([]byte("0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exitStatus != 0 {
+		t.Fatalf("exit status = %d, want 0", exitStatus)
+	}
+}
+
+func TestParseCachedExitStatusRejectsUnknownVersionedPayload(t *testing.T) {
+	_, err := parseCachedExitStatus([]byte("cmd_cache status v2\n0\n"))
+	if err == nil {
+		t.Fatal("parseCachedExitStatus accepted an unsupported versioned payload")
+	}
 }
 
 func TestRunAndCacheDoesNotCacheFailures(t *testing.T) {
