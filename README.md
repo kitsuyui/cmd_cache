@@ -109,6 +109,24 @@ $ go get -d ./...
 $ go build
 ```
 
+## Development
+
+Install [lefthook](https://github.com/evilmartians/lefthook) and register the hooks once:
+
+```console
+$ lefthook install
+```
+
+After that, on every commit the following check runs automatically:
+
+- **pre-commit**: `shellcheck bin/*.sh`, `go vet ./...`
+
+On every push the full local suite runs:
+
+- **pre-push**: `shellcheck bin/*.sh`, `go vet ./...`, `go test ./...`
+
+These hooks bring CI feedback earlier. The CI workflow still runs the full suite (including `-race -cover`) on every PR and push to main.
+
 ## LICENSE
 
 ### Source
