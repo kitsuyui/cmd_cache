@@ -217,7 +217,7 @@ func (cc CommandCache) GetOrRun() (int, error) {
 	}
 
 	lockPath := cc.StatusFilepath + ".lock"
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		// Lock file cannot be opened; fall back to running without a lock.
 		return cc.RunAndCache()
@@ -533,7 +533,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		exit(1)
 	}
-	if err := os.MkdirAll(cacheDirectory, 0755); err != nil {
+	if err := os.MkdirAll(cacheDirectory, 0700); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		exit(1)
 	}
