@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log"
 	"os"
@@ -669,6 +670,91 @@ func TestRunAndCacheCreatesMuxFileAndReplayPreservesStreams(t *testing.T) {
 	})
 	if stdout != "out" {
 		t.Errorf("stdout = %q, want %q", stdout, "out")
+	}
+}
+
+func TestRunAndCacheWritesMuxVersionHeader(t *testing.T) {
+	// New mux files must start with cacheMuxHeader so that replayMux can
+	// distinguish them from old-format files and future incompatible formats.
+	cacheDirectory := t.TempDir()
+	cacheKey := "mux-header-test"
+	commandCache := CommandCache{
+		Command:        []string{"sh", "-c", "printf out; printf err >&2"},
+		StatusFilepath: filepath.Join(cacheDirectory, cacheKey),
+		OutFilepath:    filepath.Join(cacheDirectory, cacheKey+"_out"),
+		ErrFilepath:    filepath.Join(cacheDirectory, cacheKey+"_err"),
+		MuxFilepath:    filepath.Join(cacheDirectory, cacheKey+"_mux"),
+	}
+
+	if _, err := commandCache.RunAndCache(); err != nil {
+		t.Fatal(err)
+	}
+
+	muxData, err := os.ReadFile(commandCache.MuxFilepath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(muxData), cacheMuxHeader) {
+		prefix := string(muxData)
+		if len(prefix) > 30 {
+			prefix = prefix[:30]
+		}
+		t.Fatalf("mux file does not start with version header: got %q", prefix)
+	}
+}
+
+func TestReplayByCacheFallsBackToSequentialOnOldFormatMux(t *testing.T) {
+	// A mux file without the version header (old format) must cause ReplayByCache
+	// to fall back to the sequential _out/_err path, not return an error and
+	// not re-run the command. This ensures a graceful upgrade path.
+	cacheDirectory := t.TempDir()
+	cacheKey := "old-mux-test"
+	commandCache := CommandCache{
+		Command:        []string{"sh", "-c", "echo unreachable"},
+		StatusFilepath: filepath.Join(cacheDirectory, cacheKey),
+		OutFilepath:    filepath.Join(cacheDirectory, cacheKey+"_out"),
+		ErrFilepath:    filepath.Join(cacheDirectory, cacheKey+"_err"),
+		MuxFilepath:    filepath.Join(cacheDirectory, cacheKey+"_mux"),
+	}
+
+	// Write a headerless mux file (old format: bare frame data, no version prefix).
+	oldFormatFrame := []byte{1, 0, 0, 0, 3, 'o', 'l', 'd'} // stream=1, len=3, data="old"
+	for path, content := range map[string][]byte{
+		commandCache.StatusFilepath: []byte("0"),
+		commandCache.OutFilepath:    []byte("sequential-out"),
+		commandCache.ErrFilepath:    []byte("sequential-err"),
+		commandCache.MuxFilepath:    oldFormatFrame,
+	} {
+		if err := os.WriteFile(path, content, 0666); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// ReplayByCache should succeed (no error) by falling back to _out/_err.
+	stdout, _ := captureStdoutDuring(t, func() {
+		exitStatus, err := commandCache.ReplayByCache()
+		if err != nil {
+			t.Errorf("ReplayByCache failed on old-format mux: %v", err)
+		}
+		if exitStatus != 0 {
+			t.Errorf("unexpected exit status: %d", exitStatus)
+		}
+	})
+	if stdout != "sequential-out" {
+		t.Fatalf("stdout = %q, want %q (sequential fallback)", stdout, "sequential-out")
+	}
+}
+
+func TestReplayMuxRejectsUnknownVersionHeader(t *testing.T) {
+	// A mux file with a recognised prefix but an unknown version (e.g. v2) must
+	// be rejected with errMuxFormatIncompatible so the caller can fall back.
+	v2Data := append([]byte("cmd_cache mux v2\n"), 1, 0, 0, 0, 0)
+	err := replayMux(strings.NewReader(string(v2Data)))
+	if err == nil {
+		t.Fatal("replayMux accepted an unknown version header")
+	}
+	if !errors.Is(err, errMuxFormatIncompatible) {
+		t.Fatalf("error %v is not errMuxFormatIncompatible", err)
 	}
 }
 
