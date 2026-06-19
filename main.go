@@ -418,10 +418,7 @@ func (cc CommandCache) RunAndCacheContext(ctx context.Context) (int, error) {
 	}
 	var exitStatus int
 	if err2, ok := err.(*exec.ExitError); ok {
-		exitStatus = err2.ExitCode()
-		if exitStatus == -1 {
-			exitStatus = 1 // signal-terminated; no numeric exit code available
-		}
+		exitStatus = exitStatusFromExitError(err2)
 	} else if err != nil {
 		return 1, err
 	}
@@ -455,6 +452,17 @@ func (cc CommandCache) RunAndCacheContext(ctx context.Context) (int, error) {
 		}
 	}
 	return exitStatus, nil
+}
+
+func exitStatusFromExitError(err *exec.ExitError) int {
+	if status, ok := err.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+		return 128 + int(status.Signal())
+	}
+	exitStatus := err.ExitCode()
+	if exitStatus == -1 {
+		return 1
+	}
+	return exitStatus
 }
 
 // RunAndCache executes the command and caches the result.
