@@ -205,6 +205,29 @@ func (f *cacheTempFile) Rename() error {
 	return nil
 }
 
+func (f *cacheTempFile) RemoveFinalPath() {
+	_ = os.Remove(f.finalPath)
+}
+
+// commitCacheFiles renames each file in order; on failure, it rolls back the
+// already-committed renames so no partial cache entries are left on disk.
+func commitCacheFiles(files ...*cacheTempFile) error {
+	committed := make([]*cacheTempFile, 0, len(files))
+	for _, f := range files {
+		if f == nil {
+			continue
+		}
+		if err := f.Rename(); err != nil {
+			for _, c := range committed {
+				c.RemoveFinalPath()
+			}
+			return err
+		}
+		committed = append(committed, f)
+	}
+	return nil
+}
+
 // GetOrRun returns the cached result if available. On a cache miss it acquires
 // an exclusive advisory lock on a per-cache-key lock file, re-checks the cache
 // (another process may have populated it while we waited), and runs the command
@@ -389,19 +412,8 @@ func (cc CommandCache) RunAndCache() (int, error) {
 	if err := os.Remove(cc.StatusFilepath); err != nil && !os.IsNotExist(err) {
 		return exitStatus, err
 	}
-	if err := outFile.Rename(); err != nil {
+	if err := commitCacheFiles(outFile, errFile, statusFile, muxFile); err != nil {
 		return exitStatus, err
-	}
-	if err := errFile.Rename(); err != nil {
-		return exitStatus, err
-	}
-	if err := statusFile.Rename(); err != nil {
-		return exitStatus, err
-	}
-	if muxFile != nil {
-		if err := muxFile.Rename(); err != nil {
-			return exitStatus, err
-		}
 	}
 	return exitStatus, nil
 }
