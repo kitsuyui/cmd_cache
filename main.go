@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"encoding/binary"
@@ -48,6 +49,17 @@ const cacheStatusHeader = "cmd_cache status v1\n"
 // A corrupted or adversarial _mux file could otherwise trigger a multi-GiB
 // allocation via the raw uint32 frame-length field.
 const maxMuxFrameLength = 64 * 1024 * 1024 // 64 MiB
+
+// cacheMuxHeader is the version identifier written at the start of every mux
+// file. replayMux checks for it and returns errMuxFormatIncompatible if it is
+// absent or does not match, so that ReplayByCache can fall back gracefully to
+// the sequential _out/_err path rather than producing garbled output.
+const cacheMuxHeader = "cmd_cache mux v1\n"
+
+// errMuxFormatIncompatible is returned by replayMux when the mux file header
+// is absent or unrecognised. The caller should fall back to the sequential
+// _out/_err replay path rather than treating this as data corruption.
+var errMuxFormatIncompatible = errors.New("mux format incompatible")
 
 type CommandContext struct {
 	Command                  []string
@@ -286,9 +298,20 @@ func (cc CommandCache) ReplayByCache() (int, error) {
 	// interleaving order captured during RunAndCache. Old caches without a mux
 	// file fall back to the sequential (all-stdout-then-all-stderr) path below.
 	if cc.MuxFilepath != "" {
-		if muxFile, err := os.Open(cc.MuxFilepath); err == nil {
-			defer muxFile.Close()
-			return exitStatus, replayMux(muxFile)
+		if muxData, err := os.ReadFile(cc.MuxFilepath); err == nil {
+			if bytes.HasPrefix(muxData, []byte(cacheMuxHeader)) {
+				if err := replayMux(bytes.NewReader(muxData)); err == nil {
+					return exitStatus, nil
+				} else if !errors.Is(err, errMuxFormatIncompatible) {
+					return exitStatus, err
+				}
+			} else if legacyErr := validateLegacyMuxFile(muxData); legacyErr != nil {
+				return 0, legacyErr
+			} else {
+				// Legacy mux files are intentionally replayed via the sequential
+				// _out/_err fallback so that upgrading to the versioned mux format
+				// does not change the observable replay path for old caches.
+			}
 		}
 	}
 	// Buffer both output files before writing. If either read fails no bytes
@@ -312,33 +335,44 @@ func (cc CommandCache) ReplayByCache() (int, error) {
 }
 
 // replayMux reads a mux stream written by muxWriter and dispatches each frame
-// to os.Stdout (stream_id=1) or os.Stderr (stream_id=2). All frames are buffered
-// in memory before any write so that a truncated or corrupt stream does not produce
-// partial output: if reading fails, nothing is written to stdout/stderr and a
-// fallback to RunAndCache cannot produce duplicate output.
+// to os.Stdout (stream_id=1) or os.Stderr (stream_id=2). It expects
+// cacheMuxHeader at the start of the stream; if absent or unrecognised it
+// returns errMuxFormatIncompatible so the caller can fall back gracefully.
+// All frames are buffered in memory before any write so that a truncated or
+// corrupt stream does not produce partial output: if reading fails, nothing is
+// written to stdout/stderr and a fallback to RunAndCache cannot produce
+// duplicate output.
 func replayMux(r io.Reader) error {
+	buf, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	if bytes.HasPrefix(buf, []byte(cacheMuxHeader)) {
+		buf = buf[len(cacheMuxHeader):]
+	} else if bytes.HasPrefix(buf, []byte("cmd_cache mux ")) {
+		return fmt.Errorf("%w: got %q", errMuxFormatIncompatible, string(buf[:len(cacheMuxHeader)]))
+	}
 	type frame struct {
 		stream byte
 		data   []byte
 	}
 	var frames []frame
-	var header [5]byte
-	for {
-		if _, err := io.ReadFull(r, header[:]); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return fmt.Errorf("reading mux header: %w", err)
+	for len(buf) > 0 {
+		if len(buf) < 5 {
+			return fmt.Errorf("reading mux header: %w", io.ErrUnexpectedEOF)
 		}
-		stream := header[0]
-		length := binary.BigEndian.Uint32(header[1:])
+		stream := buf[0]
+		length := binary.BigEndian.Uint32(buf[1:5])
+		buf = buf[5:]
 		if length > maxMuxFrameLength {
 			return fmt.Errorf("mux frame length %d exceeds maximum %d: cache file may be corrupt", length, maxMuxFrameLength)
 		}
-		data := make([]byte, length)
-		if _, err := io.ReadFull(r, data); err != nil {
-			return fmt.Errorf("reading mux data: %w", err)
+		if uint64(len(buf)) < uint64(length) {
+			return fmt.Errorf("reading mux data: %w", io.ErrUnexpectedEOF)
 		}
+		data := make([]byte, length)
+		copy(data, buf[:length])
+		buf = buf[length:]
 		frames = append(frames, frame{stream: stream, data: data})
 	}
 	for _, f := range frames {
@@ -352,6 +386,24 @@ func replayMux(r io.Reader) error {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+func validateLegacyMuxFile(buf []byte) error {
+	for len(buf) > 0 {
+		if len(buf) < 5 {
+			return fmt.Errorf("reading mux header: %w", io.ErrUnexpectedEOF)
+		}
+		length := binary.BigEndian.Uint32(buf[1:5])
+		buf = buf[5:]
+		if length > maxMuxFrameLength {
+			return fmt.Errorf("mux frame length %d exceeds maximum %d: cache file may be corrupt", length, maxMuxFrameLength)
+		}
+		if uint64(len(buf)) < uint64(length) {
+			return fmt.Errorf("reading mux data: %w", io.ErrUnexpectedEOF)
+		}
+		buf = buf[length:]
 	}
 	return nil
 }
@@ -395,6 +447,9 @@ func (cc CommandCache) RunAndCacheContext(ctx context.Context) (int, error) {
 			return 1, err
 		}
 		defer muxFile.Remove()
+		if _, err := muxFile.file.WriteString(cacheMuxHeader); err != nil {
+			return 1, err
+		}
 		outWriters = append(outWriters, &muxWriter{mu: &muxMu, w: muxFile.file, stream: 1})
 		errWriters = append(errWriters, &muxWriter{mu: &muxMu, w: muxFile.file, stream: 2})
 	}
