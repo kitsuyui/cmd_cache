@@ -614,6 +614,47 @@ func TestReplayByCacheNoStdoutWhenErrFileMissing(t *testing.T) {
 	}
 }
 
+func TestReplayMuxNoStdoutOnTruncatedMuxFile(t *testing.T) {
+	// A truncated mux file must not produce any stdout/stderr output before the
+	// read error is detected. Previously replayMux wrote frames incrementally;
+	// a partial read could emit output to stdout and then return an error, causing
+	// GetOrRun to fall back to RunAndCache and produce duplicate output.
+	cacheDirectory := t.TempDir()
+	cacheKey := "mux-truncated-test"
+	commandCache := CommandCache{
+		Command:        []string{"sh", "-c", "echo unreachable"},
+		StatusFilepath: filepath.Join(cacheDirectory, cacheKey),
+		OutFilepath:    filepath.Join(cacheDirectory, cacheKey+"_out"),
+		ErrFilepath:    filepath.Join(cacheDirectory, cacheKey+"_err"),
+		MuxFilepath:    filepath.Join(cacheDirectory, cacheKey+"_mux"),
+	}
+
+	// Build a mux file with one valid frame followed by a truncated frame header.
+	frame1Data := []byte("hello")
+	var muxData []byte
+	muxData = append(muxData, 1, 0, 0, 0, byte(len(frame1Data))) // frame 1 header: stdout, len=5
+	muxData = append(muxData, frame1Data...)
+	muxData = append(muxData, 1, 0, 0) // truncated frame 2 header (3 of 5 bytes)
+
+	for path, content := range map[string][]byte{
+		commandCache.StatusFilepath: []byte("0"),
+		commandCache.OutFilepath:    []byte("cached stdout"),
+		commandCache.ErrFilepath:    []byte("cached stderr"),
+		commandCache.MuxFilepath:    muxData,
+	} {
+		if err := os.WriteFile(path, content, 0666); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stdout, _ := captureStdoutDuring(t, func() {
+		_, _ = commandCache.ReplayByCache()
+	})
+	if stdout != "" {
+		t.Fatalf("ReplayByCache() wrote %q to stdout on truncated mux file", stdout)
+	}
+}
+
 func TestRunAndCacheReturnsCommandStartError(t *testing.T) {
 	cacheDirectory := t.TempDir()
 	cacheKey := "cache-key"
