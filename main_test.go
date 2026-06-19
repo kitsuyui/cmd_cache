@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -517,6 +518,30 @@ func TestRunAndCacheDoesNotCacheFailures(t *testing.T) {
 	}
 	if _, err := os.Stat(commandCache.StatusFilepath); !os.IsNotExist(err) {
 		t.Fatal("status file must not be written for failed commands")
+	}
+	assertNoCacheTempFiles(t, cacheDirectory)
+}
+
+func TestRunAndCacheReportsSignalExitStatus(t *testing.T) {
+	cacheDirectory := t.TempDir()
+	cacheKey := "cache-key"
+	commandCache := CommandCache{
+		Command:        []string{"sh", "-c", "kill -TERM $$"},
+		StatusFilepath: filepath.Join(cacheDirectory, cacheKey),
+		OutFilepath:    filepath.Join(cacheDirectory, cacheKey+"_out"),
+		ErrFilepath:    filepath.Join(cacheDirectory, cacheKey+"_err"),
+	}
+
+	exitStatus, err := commandCache.RunAndCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := 128 + int(syscall.SIGTERM)
+	if exitStatus != want {
+		t.Fatalf("unexpected exit status: %d, want %d", exitStatus, want)
+	}
+	if _, err := os.Stat(commandCache.StatusFilepath); !os.IsNotExist(err) {
+		t.Fatal("status file must not be written for signal-terminated commands")
 	}
 	assertNoCacheTempFiles(t, cacheDirectory)
 }

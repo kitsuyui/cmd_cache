@@ -325,6 +325,17 @@ func formatCachedExitStatus(exitStatus int) []byte {
 	return []byte(cacheStatusHeader + strconv.Itoa(exitStatus) + "\n")
 }
 
+func exitStatusFromExitError(err *exec.ExitError) int {
+	if status, ok := err.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+		return 128 + int(status.Signal())
+	}
+	exitStatus := err.ExitCode()
+	if exitStatus == -1 {
+		return 1
+	}
+	return exitStatus
+}
+
 func (cc CommandCache) RunAndCache() (int, error) {
 	outFile, err := newCacheTempFile(cc.OutFilepath)
 	if err != nil {
@@ -367,10 +378,7 @@ func (cc CommandCache) RunAndCache() (int, error) {
 	err = cmd.Run()
 	var exitStatus int
 	if err2, ok := err.(*exec.ExitError); ok {
-		exitStatus = err2.ExitCode()
-		if exitStatus == -1 {
-			exitStatus = 1 // signal-terminated; no numeric exit code available
-		}
+		exitStatus = exitStatusFromExitError(err2)
 	} else if err != nil {
 		return 1, err
 	}
