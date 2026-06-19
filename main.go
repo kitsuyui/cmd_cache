@@ -490,6 +490,34 @@ func collectCompleteCacheEntries(cacheDirectory string) ([]cacheEntry, error) {
 	return entries, nil
 }
 
+// cleanOrphanedTempFiles removes `.*.tmp-*` files in cacheDirectory that are
+// older than minAge. Files younger than minAge may still belong to a concurrent
+// RunAndCache invocation and are left untouched.
+func cleanOrphanedTempFiles(cacheDirectory string, minAge time.Duration) error {
+	matches, err := filepath.Glob(filepath.Join(cacheDirectory, ".*.tmp-*"))
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, path := range matches {
+		info, err := os.Lstat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			errs = append(errs, err)
+			continue
+		}
+		if time.Since(info.ModTime()) < minAge {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 func pruneCacheEntries(cacheDirectory string, maxEntries int) error {
 	if maxEntries <= 0 {
 		return nil
@@ -536,6 +564,9 @@ func main() {
 	if err := os.MkdirAll(cacheDirectory, 0755); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		exit(1)
+	}
+	if err := cleanOrphanedTempFiles(cacheDirectory, time.Hour); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 	}
 
 	commands := opts["COMMAND"].([]string)
