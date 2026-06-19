@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/docopt/docopt-go"
@@ -224,11 +223,11 @@ func (cc CommandCache) GetOrRun() (int, error) {
 	}
 	defer lockFile.Close()
 
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
-		// flock failed; fall back to running without a lock.
+	if err := flockExclusive(lockFile); err != nil {
+		// flock failed or unavailable; fall back to running without a lock.
 		return cc.RunAndCache()
 	}
-	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	defer flockUnlock(lockFile)
 
 	// Double-check: another process may have written the cache while we waited.
 	if exitStatus, err := cc.ReplayByCache(); err == nil {
