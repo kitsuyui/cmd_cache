@@ -564,6 +564,9 @@ func main() {
 	exitStatus, err := commandCache.GetOrRun()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		if exitStatus == 0 {
+			exitStatus = 1 // cache infrastructure failure must not exit 0
+		}
 	}
 	if pruneErr := pruneCacheEntries(cacheDirectory, maxCacheEntries); pruneErr != nil {
 		fmt.Fprintln(os.Stderr, pruneErr)
