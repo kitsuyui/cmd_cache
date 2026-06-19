@@ -41,6 +41,13 @@ Options:
 
 const cacheStatusHeader = "cmd_cache status v1\n"
 
+// maxMuxFrameLength caps the per-frame allocation in replayMux.
+// Subprocess output arrives through OS pipes whose write-side buffer is
+// typically ~64 KiB, so legitimate frames are far below this limit.
+// A corrupted or adversarial _mux file could otherwise trigger a multi-GiB
+// allocation via the raw uint32 frame-length field.
+const maxMuxFrameLength = 64 * 1024 * 1024 // 64 MiB
+
 type CommandContext struct {
 	Command                  []string
 	Texts                    []string
@@ -296,6 +303,9 @@ func replayMux(r io.Reader) error {
 		}
 		stream := header[0]
 		length := binary.BigEndian.Uint32(header[1:])
+		if length > maxMuxFrameLength {
+			return fmt.Errorf("mux frame length %d exceeds maximum %d: cache file may be corrupt", length, maxMuxFrameLength)
+		}
 		data := make([]byte, length)
 		if _, err := io.ReadFull(r, data); err != nil {
 			return fmt.Errorf("reading mux data: %w", err)
