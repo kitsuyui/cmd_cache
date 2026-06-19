@@ -42,6 +42,16 @@ func TestDocopt(t *testing.T) {
 	}
 }
 
+func TestDocoptRejectsMissingCommand(t *testing.T) {
+	parser := &docopt.Parser{HelpHandler: docopt.NoHelpHandler}
+	_, err := parser.ParseArgs(COMMAND_USAGE, []string{
+		"--file", "test.txt", "--",
+	}, "")
+	if err == nil {
+		t.Fatal("docopt accepted a missing command")
+	}
+}
+
 func TestVersion(t *testing.T) {
 	_, err := docopt.ParseArgs(COMMAND_USAGE, []string{
 		"--version",
@@ -70,6 +80,37 @@ func TestMainWritesVersionToStdout(t *testing.T) {
 	}
 	if output != "1.2.3-test\n" {
 		t.Fatalf("stdout = %q, want %q", output, "1.2.3-test\n")
+	}
+}
+
+func TestMainRejectsMissingCommand(t *testing.T) {
+	originalExit := exit
+	defer func() {
+		exit = originalExit
+	}()
+	originalArgs := os.Args
+	defer func() {
+		os.Args = originalArgs
+	}()
+
+	os.Args = []string{"cmd_cache", "--cache-directory=" + t.TempDir(), "--"}
+	exit = func(code int) {
+		panic(testExitCode(code))
+	}
+
+	output, recovered := captureStderrDuring(t, main)
+	code, ok := recovered.(testExitCode)
+	if !ok {
+		t.Fatalf("main() recovered %v, want exit code panic", recovered)
+	}
+	if code != 1 {
+		t.Fatalf("unexpected exit code: %d", code)
+	}
+	if strings.Contains(output, "panic") || strings.Contains(output, "index out of range") {
+		t.Fatalf("stderr = %q, must not contain panic details", output)
+	}
+	if !strings.Contains(output, "Usage:") && !strings.Contains(output, "COMMAND") {
+		t.Fatalf("stderr = %q, want usage or missing command error", output)
 	}
 }
 
