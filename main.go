@@ -491,8 +491,8 @@ func collectCompleteCacheEntries(cacheDirectory string) ([]cacheEntry, error) {
 }
 
 func pruneCacheEntries(cacheDirectory string, maxEntries int) error {
-	if maxEntries <= 0 {
-		return nil
+	if maxEntries < 0 {
+		return fmt.Errorf("maxEntries must be non-negative: %d", maxEntries)
 	}
 
 	entries, err := collectCompleteCacheEntries(cacheDirectory)
@@ -565,8 +565,10 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 	}
-	if pruneErr := pruneCacheEntries(cacheDirectory, maxCacheEntries); pruneErr != nil {
-		fmt.Fprintln(os.Stderr, pruneErr)
+	if maxCacheEntries > 0 {
+		if pruneErr := pruneCacheEntries(cacheDirectory, maxCacheEntries); pruneErr != nil {
+			fmt.Fprintln(os.Stderr, pruneErr)
+		}
 	}
 	exit(exitStatus)
 }
