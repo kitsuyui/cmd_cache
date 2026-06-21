@@ -23,7 +23,7 @@ import (
 
 const COMMAND_USAGE = `cmd_cache
 Usage:
- cmd_cache [--cache-directory=DIRECTORY] [--max-cache-entries=COUNT] [(--file FILE | --env ENV | --text TEXT)...] -- [COMMAND...]
+ cmd_cache [--cache-directory=DIRECTORY] [--max-cache-entries=COUNT] [(--file FILE | --env ENV | --text TEXT)...] -- COMMAND...
  cmd_cache (--help | --version)
 
 Arguments:
@@ -546,10 +546,15 @@ var version string
 var exit = os.Exit
 
 func main() {
-	opts, err := docopt.ParseDoc(COMMAND_USAGE)
+	parser := &docopt.Parser{HelpHandler: docopt.PrintHelpOnly}
+	opts, err := parser.ParseArgs(COMMAND_USAGE, nil, "")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		exit(1)
+		return
+	}
+	if opts == nil {
+		return
 	}
 	if showVersion, _ := opts.Bool("--version"); showVersion {
 		fmt.Println(version)
@@ -570,6 +575,11 @@ func main() {
 	}
 
 	commands := opts["COMMAND"].([]string)
+	if len(commands) == 0 {
+		fmt.Fprintln(os.Stderr, "COMMAND is required")
+		exit(1)
+		return
+	}
 	commandContext := CommandContext{
 		Command:                  commands,
 		Texts:                    opts["TEXT"].([]string),
