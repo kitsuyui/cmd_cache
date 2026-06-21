@@ -940,3 +940,36 @@ func assertNoCacheTempFiles(t *testing.T, cacheDirectory string) {
 		t.Fatalf("temporary cache files were not cleaned up: %v", matches)
 	}
 }
+
+func TestCleanOrphanedTempFilesRemovesOldFiles(t *testing.T) {
+	cacheDirectory := t.TempDir()
+	names := []string{".abc.tmp-11111", ".def.tmp-22222"}
+	for _, name := range names {
+		path := filepath.Join(cacheDirectory, name)
+		if err := os.WriteFile(path, []byte("orphan"), 0666); err != nil {
+			t.Fatal(err)
+		}
+		oldTime := time.Now().Add(-2 * time.Hour)
+		if err := os.Chtimes(path, oldTime, oldTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cleanOrphanedTempFiles(cacheDirectory, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	assertNoCacheTempFiles(t, cacheDirectory)
+}
+
+func TestCleanOrphanedTempFilesPreservesRecentFiles(t *testing.T) {
+	cacheDirectory := t.TempDir()
+	path := filepath.Join(cacheDirectory, ".recent.tmp-12345")
+	if err := os.WriteFile(path, []byte("active"), 0666); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanOrphanedTempFiles(cacheDirectory, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("recent temp file must not be removed: %v", err)
+	}
+}
