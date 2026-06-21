@@ -44,6 +44,16 @@ func TestDocopt(t *testing.T) {
 	}
 }
 
+func TestDocoptRejectsMissingCommand(t *testing.T) {
+	parser := &docopt.Parser{HelpHandler: docopt.NoHelpHandler}
+	_, err := parser.ParseArgs(COMMAND_USAGE, []string{
+		"--file", "test.txt", "--",
+	}, "")
+	if err == nil {
+		t.Fatal("docopt accepted a missing command")
+	}
+}
+
 func TestVersion(t *testing.T) {
 	_, err := docopt.ParseArgs(COMMAND_USAGE, []string{
 		"--version",
@@ -72,6 +82,37 @@ func TestMainWritesVersionToStdout(t *testing.T) {
 	}
 	if output != "1.2.3-test\n" {
 		t.Fatalf("stdout = %q, want %q", output, "1.2.3-test\n")
+	}
+}
+
+func TestMainRejectsMissingCommand(t *testing.T) {
+	originalExit := exit
+	defer func() {
+		exit = originalExit
+	}()
+	originalArgs := os.Args
+	defer func() {
+		os.Args = originalArgs
+	}()
+
+	os.Args = []string{"cmd_cache", "--cache-directory=" + t.TempDir(), "--"}
+	exit = func(code int) {
+		panic(testExitCode(code))
+	}
+
+	output, recovered := captureStderrDuring(t, main)
+	code, ok := recovered.(testExitCode)
+	if !ok {
+		t.Fatalf("main() recovered %v, want exit code panic", recovered)
+	}
+	if code != 1 {
+		t.Fatalf("unexpected exit code: %d", code)
+	}
+	if strings.Contains(output, "panic") || strings.Contains(output, "index out of range") {
+		t.Fatalf("stderr = %q, must not contain panic details", output)
+	}
+	if !strings.Contains(output, "Usage:") && !strings.Contains(output, "COMMAND") {
+		t.Fatalf("stderr = %q, want usage or missing command error", output)
 	}
 }
 
@@ -301,17 +342,26 @@ func TestCommandOrderStillAffectsHash(t *testing.T) {
 }
 
 func TestFileHash(t *testing.T) {
-	outFile, err := os.OpenFile("build/testfile", os.O_WRONLY|os.O_CREATE, 0666)
-	if err != nil {
-		log.Fatal(err)
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+	if err := os.Mkdir("build", 0755); err != nil {
+		t.Fatal(err)
 	}
-	outFile.Write([]byte("Hello, World!"))
+	dependencyFile := filepath.Join("build", "testfile")
+
+	outFile, err := os.OpenFile(dependencyFile, os.O_WRONLY|os.O_CREATE, 0666)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer outFile.Close()
+	if _, err := outFile.Write([]byte("Hello, World!")); err != nil {
+		t.Fatal(err)
+	}
 	hashString := hashStringFromCommandContext(t, CommandContext{
 		Command:                  []string{},
 		Texts:                    []string{},
 		EnvironmentVariableNames: []string{},
-		Filenames:                []string{"build/testfile"},
+		Filenames:                []string{dependencyFile},
 	})
 	if hashString != "6d7e43ef5351becf7a79030cfa7325756176674b" {
 		t.Error("Unexpected hash value:", hashString)
@@ -425,12 +475,8 @@ func TestGetOrRunReplaysCacheOnHit(t *testing.T) {
 }
 
 func TestRunAndCacheTruncatesExistingCacheFiles(t *testing.T) {
-	cacheDirectory := ".cmd_cache_test"
+	cacheDirectory := t.TempDir()
 	cacheKey := "cache-key"
-	if err := os.MkdirAll(cacheDirectory, 0755); err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(cacheDirectory)
 
 	commandCache := CommandCache{
 		Command:        []string{"sh", "-c", "printf x; printf y >&2"},
@@ -965,5 +1011,38 @@ func TestReplayMuxAcceptsMaxSizeFrame(t *testing.T) {
 	err := replayMux(&buf)
 	if err != nil {
 		t.Fatalf("replayMux() returned unexpected error for max-size frame: %v", err)
+	}
+}
+
+func TestCleanOrphanedTempFilesRemovesOldFiles(t *testing.T) {
+	cacheDirectory := t.TempDir()
+	names := []string{".abc.tmp-11111", ".def.tmp-22222"}
+	for _, name := range names {
+		path := filepath.Join(cacheDirectory, name)
+		if err := os.WriteFile(path, []byte("orphan"), 0666); err != nil {
+			t.Fatal(err)
+		}
+		oldTime := time.Now().Add(-2 * time.Hour)
+		if err := os.Chtimes(path, oldTime, oldTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cleanOrphanedTempFiles(cacheDirectory, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	assertNoCacheTempFiles(t, cacheDirectory)
+}
+
+func TestCleanOrphanedTempFilesPreservesRecentFiles(t *testing.T) {
+	cacheDirectory := t.TempDir()
+	path := filepath.Join(cacheDirectory, ".recent.tmp-12345")
+	if err := os.WriteFile(path, []byte("active"), 0666); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanOrphanedTempFiles(cacheDirectory, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("recent temp file must not be removed: %v", err)
 	}
 }
