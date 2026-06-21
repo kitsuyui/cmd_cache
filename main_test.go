@@ -852,6 +852,61 @@ func TestPruneCacheEntriesIgnoresNonCacheFileGroups(t *testing.T) {
 	assertCacheEntryExists(t, cacheDirectory, "not-a-cache-key")
 }
 
+func TestPruneCacheEntriesMuxModTimeUsedForEviction(t *testing.T) {
+	// Entry A: all files at oldTime, including mux.
+	// Entry B: status/out/err at oldTime, mux at newTime.
+	// After pruning to 1, entry A has effective modTime=oldTime and is evicted;
+	// entry B has effective modTime=newTime (from mux) and is kept.
+	cacheDirectory := t.TempDir()
+	oldTime := time.Unix(100, 0)
+	newTime := time.Unix(200, 0)
+	oldKey := "0000000000000000000000000000000000000001"
+	newKey := "0000000000000000000000000000000000000002"
+
+	writeCompleteCacheEntry(t, cacheDirectory, oldKey, oldTime)
+	writeCompleteCacheEntryWithMuxModTime(t, cacheDirectory, newKey, oldTime, newTime)
+
+	if err := pruneCacheEntries(cacheDirectory, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	assertCacheEntryRemoved(t, cacheDirectory, oldKey)
+	assertCacheEntryExists(t, cacheDirectory, newKey)
+}
+
+func TestCollectCompleteCacheEntriesWithoutMuxFile(t *testing.T) {
+	// Entries without a mux file (old cache format) must still be collected and
+	// their modTime computed from status/out/err only.
+	cacheDirectory := t.TempDir()
+	key := "0000000000000000000000000000000000000001"
+	modTime := time.Unix(100, 0)
+
+	for suffix, content := range map[string]string{
+		"":     "0",
+		"_out": "stdout",
+		"_err": "stderr",
+	} {
+		path := filepath.Join(cacheDirectory, key+suffix)
+		if err := os.WriteFile(path, []byte(content), 0666); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, modTime, modTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entries, err := collectCompleteCacheEntries(cacheDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("complete entries = %d, want 1", len(entries))
+	}
+	if !entries[0].ModTime.Equal(modTime) {
+		t.Fatalf("ModTime = %v, want %v", entries[0].ModTime, modTime)
+	}
+}
+
 func writeCompleteCacheEntry(t *testing.T, cacheDirectory, key string, modTime time.Time) {
 	t.Helper()
 
@@ -869,6 +924,32 @@ func writeCompleteCacheEntry(t *testing.T, cacheDirectory, key string, modTime t
 		if err := os.Chtimes(path, modTime, modTime); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func writeCompleteCacheEntryWithMuxModTime(t *testing.T, cacheDirectory, key string, modTime, muxModTime time.Time) {
+	t.Helper()
+
+	for suffix, content := range map[string]string{
+		"":      "0",
+		"_out":  "stdout",
+		"_err":  "stderr",
+		".lock": "",
+	} {
+		path := filepath.Join(cacheDirectory, key+suffix)
+		if err := os.WriteFile(path, []byte(content), 0666); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, modTime, modTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	muxPath := filepath.Join(cacheDirectory, key+"_mux")
+	if err := os.WriteFile(muxPath, []byte("mux"), 0666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(muxPath, muxModTime, muxModTime); err != nil {
+		t.Fatal(err)
 	}
 }
 
