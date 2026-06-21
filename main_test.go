@@ -299,17 +299,26 @@ func TestCommandOrderStillAffectsHash(t *testing.T) {
 }
 
 func TestFileHash(t *testing.T) {
-	outFile, err := os.OpenFile("build/testfile", os.O_WRONLY|os.O_CREATE, 0666)
-	if err != nil {
-		log.Fatal(err)
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+	if err := os.Mkdir("build", 0755); err != nil {
+		t.Fatal(err)
 	}
-	outFile.Write([]byte("Hello, World!"))
+	dependencyFile := filepath.Join("build", "testfile")
+
+	outFile, err := os.OpenFile(dependencyFile, os.O_WRONLY|os.O_CREATE, 0666)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer outFile.Close()
+	if _, err := outFile.Write([]byte("Hello, World!")); err != nil {
+		t.Fatal(err)
+	}
 	hashString := hashStringFromCommandContext(t, CommandContext{
 		Command:                  []string{},
 		Texts:                    []string{},
 		EnvironmentVariableNames: []string{},
-		Filenames:                []string{"build/testfile"},
+		Filenames:                []string{dependencyFile},
 	})
 	if hashString != "6d7e43ef5351becf7a79030cfa7325756176674b" {
 		t.Error("Unexpected hash value:", hashString)
@@ -423,12 +432,8 @@ func TestGetOrRunReplaysCacheOnHit(t *testing.T) {
 }
 
 func TestRunAndCacheTruncatesExistingCacheFiles(t *testing.T) {
-	cacheDirectory := ".cmd_cache_test"
+	cacheDirectory := t.TempDir()
 	cacheKey := "cache-key"
-	if err := os.MkdirAll(cacheDirectory, 0755); err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(cacheDirectory)
 
 	commandCache := CommandCache{
 		Command:        []string{"sh", "-c", "printf x; printf y >&2"},
