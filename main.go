@@ -308,6 +308,8 @@ func replayMux(r io.Reader) error {
 			if _, err := os.Stderr.Write(data); err != nil {
 				return err
 			}
+		default:
+			return fmt.Errorf("unknown stream_id %d in mux frame", stream)
 		}
 	}
 }

@@ -660,6 +660,47 @@ func TestReplayByCacheNoStdoutWhenErrFileMissing(t *testing.T) {
 	}
 }
 
+func TestReplayMuxRejectsUnknownStreamID(t *testing.T) {
+	// A frame with stream_id other than 1 or 2 must cause replayMux to return an
+	// error rather than silently dropping the frame and reporting success. Silent
+	// drops cause the caller to treat a corrupt mux file as valid, so the cached
+	// output diverges from what the command actually produced.
+	cacheDirectory := t.TempDir()
+	cacheKey := "mux-unknown-stream-test"
+	commandCache := CommandCache{
+		Command:        []string{"sh", "-c", "echo unreachable"},
+		StatusFilepath: filepath.Join(cacheDirectory, cacheKey),
+		OutFilepath:    filepath.Join(cacheDirectory, cacheKey+"_out"),
+		ErrFilepath:    filepath.Join(cacheDirectory, cacheKey+"_err"),
+		MuxFilepath:    filepath.Join(cacheDirectory, cacheKey+"_mux"),
+	}
+
+	// Build a mux file with one frame that has an unknown stream_id (3).
+	unknownData := []byte("dropped-data")
+	var muxData []byte
+	muxData = append(muxData, 3, 0, 0, 0, byte(len(unknownData))) // stream_id=3 (invalid)
+	muxData = append(muxData, unknownData...)
+
+	for path, content := range map[string][]byte{
+		commandCache.StatusFilepath: []byte("0"),
+		commandCache.OutFilepath:    []byte("cached stdout"),
+		commandCache.ErrFilepath:    []byte("cached stderr"),
+		commandCache.MuxFilepath:    muxData,
+	} {
+		if err := os.WriteFile(path, content, 0666); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, err := commandCache.ReplayByCache()
+	if err == nil {
+		t.Fatal("ReplayByCache() returned nil error for unknown stream_id in mux file")
+	}
+	if !strings.Contains(err.Error(), "unknown stream_id") {
+		t.Fatalf("error %q does not mention unknown stream_id", err.Error())
+	}
+}
+
 func TestRunAndCacheReturnsCommandStartError(t *testing.T) {
 	cacheDirectory := t.TempDir()
 	cacheKey := "cache-key"
