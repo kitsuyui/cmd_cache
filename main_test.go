@@ -982,6 +982,46 @@ func assertNoCacheTempFiles(t *testing.T, cacheDirectory string) {
 	}
 }
 
+func TestCommitCacheFilesRollsBackOnFailure(t *testing.T) {
+	// Verify that commitCacheFiles removes already-committed files when a later
+	// rename fails, leaving no orphaned cache files on disk.
+	dir := t.TempDir()
+
+	// Prepare two temp files with distinct final paths.
+	finalOut := filepath.Join(dir, "abc_out")
+	finalErr := filepath.Join(dir, "abc_err")
+
+	outFile, err := newCacheTempFile(finalOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outFile.Remove()
+	errFile, err := newCacheTempFile(finalErr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer errFile.Remove()
+
+	// Block finalErr rename by placing a non-empty directory at that path.
+	if err := os.MkdirAll(finalErr, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Put a file inside so the directory is non-empty (some OS refuse rename over non-empty dir).
+	if err := os.WriteFile(filepath.Join(finalErr, "block"), nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// commitCacheFiles must fail and must NOT leave finalOut on disk.
+	commitErr := commitCacheFiles(outFile, errFile)
+	if commitErr == nil {
+		t.Fatal("commitCacheFiles should have returned an error")
+	}
+
+	if _, err := os.Stat(finalOut); !os.IsNotExist(err) {
+		t.Fatalf("commitCacheFiles left orphaned file %s after rollback", finalOut)
+	}
+}
+
 func TestCleanOrphanedTempFilesRemovesOldFiles(t *testing.T) {
 	cacheDirectory := t.TempDir()
 	names := []string{".abc.tmp-11111", ".def.tmp-22222"}
