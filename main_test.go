@@ -718,6 +718,24 @@ func TestRunAndCacheCreatesMuxFileAndReplayPreservesStreams(t *testing.T) {
 	}
 }
 
+func TestMuxFrameHeaderEncodesMaxPayloadLength(t *testing.T) {
+	header, err := muxFrameHeader(2, maxMuxFramePayloadLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := [5]byte{2, 0xff, 0xff, 0xff, 0xff}
+	if header != expected {
+		t.Fatalf("muxFrameHeader() = %v, want %v", header, expected)
+	}
+}
+
+func TestMuxFrameHeaderRejectsOversizedPayload(t *testing.T) {
+	_, err := muxFrameHeader(1, maxMuxFramePayloadLength+1)
+	if err == nil {
+		t.Fatal("muxFrameHeader() accepted a payload larger than the uint32 frame limit")
+	}
+}
+
 func TestReplayByCacheFallsBackToSequentialWithoutMuxFile(t *testing.T) {
 	cacheDirectory := t.TempDir()
 	cacheKey := "no-mux-test"

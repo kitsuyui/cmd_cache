@@ -145,12 +145,25 @@ type muxWriter struct {
 	stream byte // 1 = stdout, 2 = stderr
 }
 
+const maxMuxFramePayloadLength uint64 = 1<<32 - 1
+
+func muxFrameHeader(stream byte, payloadLength uint64) ([5]byte, error) {
+	var header [5]byte
+	if payloadLength > maxMuxFramePayloadLength {
+		return header, fmt.Errorf("mux frame payload too large: %d bytes exceeds %d-byte frame limit", payloadLength, maxMuxFramePayloadLength)
+	}
+	header[0] = stream
+	binary.BigEndian.PutUint32(header[1:], uint32(payloadLength))
+	return header, nil
+}
+
 func (m *muxWriter) Write(p []byte) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var header [5]byte
-	header[0] = m.stream
-	binary.BigEndian.PutUint32(header[1:], uint32(len(p)))
+	header, err := muxFrameHeader(m.stream, uint64(len(p)))
+	if err != nil {
+		return 0, err
+	}
 	if _, err := m.w.Write(header[:]); err != nil {
 		return 0, err
 	}
