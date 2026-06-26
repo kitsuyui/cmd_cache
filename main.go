@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
 	"hash"
 	"io"
@@ -16,8 +17,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/docopt/docopt-go"
 )
 
 const COMMAND_USAGE = `cmd_cache
@@ -544,36 +543,83 @@ func pruneCacheEntries(cacheDirectory string, maxEntries int) error {
 var version string
 var exit = os.Exit
 
+// stringSlice accumulates repeated flag values (e.g. --file a --file b).
+type stringSlice []string
+
+func (s *stringSlice) String() string { return strings.Join(*s, ",") }
+func (s *stringSlice) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
+type cliOptions struct {
+	cacheDirectory  string
+	maxCacheEntries string
+	showVersion     bool
+	files           []string
+	envVars         []string
+	texts           []string
+	command         []string
+}
+
+func parseCLI(args []string) (cliOptions, error) {
+	fs := flag.NewFlagSet("cmd_cache", flag.ContinueOnError)
+	fs.Usage = func() { fmt.Fprint(os.Stderr, COMMAND_USAGE) }
+
+	var files, envVars, texts stringSlice
+	cacheDir := fs.String("cache-directory", ".cmd_cache", "Cache directory")
+	maxEntries := fs.String("max-cache-entries", "1024", "Maximum complete cache entries to keep; 0 disables pruning")
+	showVersion := fs.Bool("version", false, "Show version")
+	showVersionShort := fs.Bool("V", false, "Show version")
+	fs.Var(&files, "file", "Depending file under the current working directory (may be repeated)")
+	fs.Var(&envVars, "env", "Depending environment variable (may be repeated)")
+	fs.Var(&texts, "text", "Text affecting command (may be repeated)")
+
+	if err := fs.Parse(args); err != nil {
+		return cliOptions{}, err
+	}
+	return cliOptions{
+		cacheDirectory:  *cacheDir,
+		maxCacheEntries: *maxEntries,
+		showVersion:     *showVersion || *showVersionShort,
+		files:           []string(files),
+		envVars:         []string(envVars),
+		texts:           []string(texts),
+		command:         fs.Args(),
+	}, nil
+}
+
 func main() {
-	parser := &docopt.Parser{HelpHandler: docopt.PrintHelpOnly}
-	opts, err := parser.ParseArgs(COMMAND_USAGE, nil, "")
+	opts, err := parseCLI(os.Args[1:])
 	if err != nil {
+		if err == flag.ErrHelp {
+			return
+		}
 		fmt.Fprintln(os.Stderr, err)
 		exit(1)
 		return
 	}
-	if opts == nil {
-		return
-	}
-	if showVersion, _ := opts.Bool("--version"); showVersion {
+	if opts.showVersion {
 		fmt.Println(version)
 		return
 	}
-	cacheDirectory := opts["--cache-directory"].(string)
-	maxCacheEntries, err := parseMaxCacheEntries(opts["--max-cache-entries"].(string))
+	cacheDirectory := opts.cacheDirectory
+	maxCacheEntries, err := parseMaxCacheEntries(opts.maxCacheEntries)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		exit(1)
+		return
 	}
 	if err := os.MkdirAll(cacheDirectory, 0700); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		exit(1)
+		return
 	}
 	if err := cleanOrphanedTempFiles(cacheDirectory, time.Hour); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 	}
 
-	commands := opts["COMMAND"].([]string)
+	commands := opts.command
 	if len(commands) == 0 {
 		fmt.Fprintln(os.Stderr, "COMMAND is required")
 		exit(1)
@@ -581,9 +627,9 @@ func main() {
 	}
 	commandContext := CommandContext{
 		Command:                  commands,
-		Texts:                    opts["TEXT"].([]string),
-		EnvironmentVariableNames: opts["ENV"].([]string),
-		Filenames:                opts["FILE"].([]string),
+		Texts:                    opts.texts,
+		EnvironmentVariableNames: opts.envVars,
+		Filenames:                opts.files,
 	}
 
 	h := sha1.New()
