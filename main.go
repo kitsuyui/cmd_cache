@@ -221,6 +221,7 @@ func (cc CommandCache) GetOrRun() (int, error) {
 		// Lock file cannot be opened; fall back to running without a lock.
 		return cc.RunAndCache()
 	}
+	defer os.Remove(lockPath) // remove after Close (LIFO: registered first, runs last)
 	defer lockFile.Close()
 
 	if err := flockExclusive(lockFile); err != nil {
