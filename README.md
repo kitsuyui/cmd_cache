@@ -52,6 +52,28 @@ cmd_cache --env PATH --env LANG -- my-command
 Shared cache directories across machines or CI environments with different
 `PATH` or locale settings can produce stale replays from a cache hit.
 
+## Working directory inheritance
+
+The cache key does not include the current working directory (CWD). The
+wrapped command inherits the CWD of the `cmd_cache` process, but this
+CWD is not factored into the cache key.
+
+This means that CWD-sensitive commands — such as `ls`, `make`,
+`go build`, or `git status` — can produce a cache hit across different
+directories. The first cached result will be replayed regardless of
+which directory `cmd_cache` was invoked from.
+
+If the wrapped command's output depends on the CWD, include it
+explicitly in the cache key:
+
+```sh
+cmd_cache --text "$PWD" -- ls
+```
+
+This mirrors the [`--env`](#environment-variable-inheritance) pattern
+for environment variables: any implicit dependency on the runtime
+environment must be declared explicitly to get a correct cache key.
+
 ## Time-dependent commands
 
 `cmd_cache` does not expire entries by time. There is no TTL, `--max-age`, or
