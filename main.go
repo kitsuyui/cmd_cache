@@ -25,7 +25,7 @@ import (
 
 const COMMAND_USAGE = `cmd_cache
 Usage:
- cmd_cache [--cache-directory=DIRECTORY] [--max-cache-entries=COUNT] [(--file FILE | --env ENV | --text TEXT)...] -- [COMMAND...]
+ cmd_cache [--cache-directory=DIRECTORY] [--max-cache-entries=COUNT] [(--file FILE | --env ENV | --text TEXT)...] -- COMMAND...
  cmd_cache (--help | --version)
 
 Arguments:
@@ -216,18 +216,18 @@ func (cc CommandCache) GetOrRunContext(ctx context.Context) (int, error) {
 	}
 
 	lockPath := cc.StatusFilepath + ".lock"
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		// Lock file cannot be opened; fall back to running without a lock.
 		return cc.RunAndCacheContext(ctx)
 	}
 	defer lockFile.Close()
 
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
-		// flock failed; fall back to running without a lock.
+	if err := flockExclusive(lockFile); err != nil {
+		// flock failed or unavailable; fall back to running without a lock.
 		return cc.RunAndCacheContext(ctx)
 	}
-	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	defer flockUnlock(lockFile)
 
 	// Double-check: another process may have written the cache while we waited.
 	if exitStatus, err := cc.ReplayByCache(); err == nil {
@@ -512,6 +512,34 @@ func collectCompleteCacheEntries(cacheDirectory string) ([]cacheEntry, error) {
 	return entries, nil
 }
 
+// cleanOrphanedTempFiles removes `.*.tmp-*` files in cacheDirectory that are
+// older than minAge. Files younger than minAge may still belong to a concurrent
+// RunAndCache invocation and are left untouched.
+func cleanOrphanedTempFiles(cacheDirectory string, minAge time.Duration) error {
+	matches, err := filepath.Glob(filepath.Join(cacheDirectory, ".*.tmp-*"))
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, path := range matches {
+		info, err := os.Lstat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			errs = append(errs, err)
+			continue
+		}
+		if time.Since(info.ModTime()) < minAge {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 func pruneCacheEntries(cacheDirectory string, maxEntries int) error {
 	if maxEntries <= 0 {
 		return nil
@@ -540,10 +568,15 @@ var version string
 var exit = os.Exit
 
 func main() {
-	opts, err := docopt.ParseDoc(COMMAND_USAGE)
+	parser := &docopt.Parser{HelpHandler: docopt.PrintHelpOnly}
+	opts, err := parser.ParseArgs(COMMAND_USAGE, nil, "")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		exit(1)
+		return
+	}
+	if opts == nil {
+		return
 	}
 	if showVersion, _ := opts.Bool("--version"); showVersion {
 		fmt.Println(version)
@@ -555,12 +588,20 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		exit(1)
 	}
-	if err := os.MkdirAll(cacheDirectory, 0755); err != nil {
+	if err := os.MkdirAll(cacheDirectory, 0700); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		exit(1)
 	}
+	if err := cleanOrphanedTempFiles(cacheDirectory, time.Hour); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
 
 	commands := opts["COMMAND"].([]string)
+	if len(commands) == 0 {
+		fmt.Fprintln(os.Stderr, "COMMAND is required")
+		exit(1)
+		return
+	}
 	commandContext := CommandContext{
 		Command:                  commands,
 		Texts:                    opts["TEXT"].([]string),

@@ -86,7 +86,7 @@ $ cmd_cache --file depedingfile.go --env GOPATH -- go build
 cmd_cache
 
 Usage:
- cmd_cache [--cache-directory=DIRECTORY] [--max-cache-entries=COUNT] [(--file FILE | --env ENV | --text TEXT)...] -- [COMMAND...]
+ cmd_cache [--cache-directory=DIRECTORY] [--max-cache-entries=COUNT] [(--file FILE | --env ENV | --text TEXT)...] -- COMMAND...
  cmd_cache (--help | --version)
 
 Arguments:
