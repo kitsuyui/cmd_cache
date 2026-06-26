@@ -283,13 +283,21 @@ func (cc CommandCache) ReplayByCache() (int, error) {
 }
 
 // replayMux reads a mux stream written by muxWriter and dispatches each frame
-// to os.Stdout (stream_id=1) or os.Stderr (stream_id=2).
+// to os.Stdout (stream_id=1) or os.Stderr (stream_id=2). All frames are buffered
+// in memory before any write so that a truncated or corrupt stream does not produce
+// partial output: if reading fails, nothing is written to stdout/stderr and a
+// fallback to RunAndCache cannot produce duplicate output.
 func replayMux(r io.Reader) error {
+	type frame struct {
+		stream byte
+		data   []byte
+	}
+	var frames []frame
 	var header [5]byte
 	for {
 		if _, err := io.ReadFull(r, header[:]); err != nil {
 			if err == io.EOF {
-				return nil
+				break
 			}
 			return fmt.Errorf("reading mux header: %w", err)
 		}
@@ -299,17 +307,21 @@ func replayMux(r io.Reader) error {
 		if _, err := io.ReadFull(r, data); err != nil {
 			return fmt.Errorf("reading mux data: %w", err)
 		}
-		switch stream {
+		frames = append(frames, frame{stream: stream, data: data})
+	}
+	for _, f := range frames {
+		switch f.stream {
 		case 1:
-			if _, err := os.Stdout.Write(data); err != nil {
+			if _, err := os.Stdout.Write(f.data); err != nil {
 				return err
 			}
 		case 2:
-			if _, err := os.Stderr.Write(data); err != nil {
+			if _, err := os.Stderr.Write(f.data); err != nil {
 				return err
 			}
 		}
 	}
+	return nil
 }
 
 func parseCachedExitStatus(content []byte) (int, error) {
