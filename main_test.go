@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha1"
+	"encoding/binary"
 	"encoding/hex"
 	"io"
 	"log"
@@ -979,6 +981,36 @@ func assertNoCacheTempFiles(t *testing.T, cacheDirectory string) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("temporary cache files were not cleaned up: %v", matches)
+	}
+}
+
+func TestReplayMuxRejectsOversizedFrame(t *testing.T) {
+	var buf bytes.Buffer
+	var header [5]byte
+	header[0] = 1 // stream stdout
+	binary.BigEndian.PutUint32(header[1:], maxMuxFrameLength+1)
+	buf.Write(header[:])
+
+	err := replayMux(&buf)
+	if err == nil {
+		t.Fatal("replayMux() returned nil for a frame exceeding maxMuxFrameLength")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum") {
+		t.Errorf("error message %q does not mention 'exceeds maximum'", err.Error())
+	}
+}
+
+func TestReplayMuxAcceptsMaxSizeFrame(t *testing.T) {
+	var buf bytes.Buffer
+	var header [5]byte
+	header[0] = 1 // stream stdout
+	binary.BigEndian.PutUint32(header[1:], maxMuxFrameLength)
+	buf.Write(header[:])
+	buf.Write(make([]byte, maxMuxFrameLength))
+
+	err := replayMux(&buf)
+	if err != nil {
+		t.Fatalf("replayMux() returned unexpected error for max-size frame: %v", err)
 	}
 }
 
