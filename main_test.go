@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -896,6 +897,78 @@ func TestPruneCacheEntriesIgnoresNonCacheFileGroups(t *testing.T) {
 	assertCacheEntryRemoved(t, cacheDirectory, oldKey)
 	assertCacheEntryExists(t, cacheDirectory, newKey)
 	assertCacheEntryExists(t, cacheDirectory, "not-a-cache-key")
+}
+
+// TestCollectCompleteCacheEntriesReturnsErrorOnNonEnoentStatFailure verifies that
+// stat errors other than ENOENT (e.g. ELOOP from a symlink cycle) are returned
+// as errors rather than silently discarded, while accessible entries are still
+// returned in the list.
+func TestCollectCompleteCacheEntriesReturnsErrorOnNonEnoentStatFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink loop behavior differs on Windows")
+	}
+	cacheDirectory := t.TempDir()
+	goodKey := "0000000000000000000000000000000000000001"
+	brokenKey := "0000000000000000000000000000000000000002"
+
+	writeCompleteCacheEntry(t, cacheDirectory, goodKey, time.Unix(100, 0))
+
+	// Create a partial entry where _err is a self-referential symlink (ELOOP on stat).
+	for _, suffix := range []string{"", "_out"} {
+		path := filepath.Join(cacheDirectory, brokenKey+suffix)
+		if err := os.WriteFile(path, []byte("x"), 0o666); err != nil {
+			t.Fatal(err)
+		}
+	}
+	errPath := filepath.Join(cacheDirectory, brokenKey+"_err")
+	if err := os.Symlink(errPath, errPath); err != nil {
+		t.Fatalf("could not create symlink loop: %v", err)
+	}
+
+	entries, err := collectCompleteCacheEntries(cacheDirectory)
+	if err == nil {
+		t.Fatal("expected non-nil error for non-ENOENT stat failure, got nil")
+	}
+	if len(entries) != 1 || entries[0].Key != goodKey {
+		t.Fatalf("expected only accessible entry %q, got %v", goodKey, entries)
+	}
+}
+
+// TestPruneCacheEntriesProceedsWithAccessibleEntriesOnPartialCollectError verifies
+// that pruneCacheEntries still prunes accessible entries even when collectCompleteCacheEntries
+// returns a non-nil error for some entries.
+func TestPruneCacheEntriesProceedsWithAccessibleEntriesOnPartialCollectError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink loop behavior differs on Windows")
+	}
+	cacheDirectory := t.TempDir()
+	oldKey := "0000000000000000000000000000000000000001"
+	newKey := "0000000000000000000000000000000000000002"
+	brokenKey := "0000000000000000000000000000000000000003"
+
+	writeCompleteCacheEntry(t, cacheDirectory, oldKey, time.Unix(100, 0))
+	writeCompleteCacheEntry(t, cacheDirectory, newKey, time.Unix(200, 0))
+
+	// Add an entry with a symlink-loop _err so collectCompleteCacheEntries returns an error.
+	for _, suffix := range []string{"", "_out"} {
+		path := filepath.Join(cacheDirectory, brokenKey+suffix)
+		if err := os.WriteFile(path, []byte("x"), 0o666); err != nil {
+			t.Fatal(err)
+		}
+	}
+	errPath := filepath.Join(cacheDirectory, brokenKey+"_err")
+	if err := os.Symlink(errPath, errPath); err != nil {
+		t.Fatalf("could not create symlink loop: %v", err)
+	}
+
+	// With maxEntries=1, the older accessible entry should be pruned even though
+	// the broken entry caused a collection error.
+	err := pruneCacheEntries(cacheDirectory, 1)
+	if err == nil {
+		t.Fatal("expected non-nil error propagated from collectCompleteCacheEntries, got nil")
+	}
+	assertCacheEntryRemoved(t, cacheDirectory, oldKey)
+	assertCacheEntryExists(t, cacheDirectory, newKey)
 }
 
 func writeCompleteCacheEntry(t *testing.T, cacheDirectory, key string, modTime time.Time) {

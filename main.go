@@ -432,6 +432,7 @@ func collectCompleteCacheEntries(cacheDirectory string) ([]cacheEntry, error) {
 		return nil, err
 	}
 
+	var errs []error
 	entries := make([]cacheEntry, 0, len(dirEntries))
 	for _, dirEntry := range dirEntries {
 		if dirEntry.IsDir() {
@@ -452,14 +453,23 @@ func collectCompleteCacheEntries(cacheDirectory string) ([]cacheEntry, error) {
 		errPath := filepath.Join(cacheDirectory, key+"_err")
 		statusInfo, err := dirEntry.Info()
 		if err != nil {
+			if !os.IsNotExist(err) {
+				errs = append(errs, err)
+			}
 			continue
 		}
 		outInfo, err := os.Stat(outPath)
 		if err != nil {
+			if !os.IsNotExist(err) {
+				errs = append(errs, err)
+			}
 			continue
 		}
 		errInfo, err := os.Stat(errPath)
 		if err != nil {
+			if !os.IsNotExist(err) {
+				errs = append(errs, err)
+			}
 			continue
 		}
 
@@ -487,7 +497,7 @@ func collectCompleteCacheEntries(cacheDirectory string) ([]cacheEntry, error) {
 		}
 		return entries[i].ModTime.Before(entries[j].ModTime)
 	})
-	return entries, nil
+	return entries, errors.Join(errs...)
 }
 
 // cleanOrphanedTempFiles removes `.*.tmp-*` files in cacheDirectory that are
@@ -523,23 +533,19 @@ func pruneCacheEntries(cacheDirectory string, maxEntries int) error {
 		return nil
 	}
 
-	entries, err := collectCompleteCacheEntries(cacheDirectory)
-	if err != nil {
-		return err
-	}
-	if len(entries) <= maxEntries {
-		return nil
-	}
-
-	var errs []error
-	for _, entry := range entries[:len(entries)-maxEntries] {
-		for _, path := range []string{entry.StatusFilepath, entry.OutFilepath, entry.ErrFilepath, entry.MuxFilepath, entry.LockFilepath} {
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				errs = append(errs, err)
+	entries, collectErr := collectCompleteCacheEntries(cacheDirectory)
+	if len(entries) > maxEntries {
+		var errs []error
+		for _, entry := range entries[:len(entries)-maxEntries] {
+			for _, path := range []string{entry.StatusFilepath, entry.OutFilepath, entry.ErrFilepath, entry.MuxFilepath, entry.LockFilepath} {
+				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+					errs = append(errs, err)
+				}
 			}
 		}
+		return errors.Join(errors.Join(errs...), collectErr)
 	}
-	return errors.Join(errs...)
+	return collectErr
 }
 
 var version string
