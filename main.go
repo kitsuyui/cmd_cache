@@ -468,6 +468,13 @@ func collectCompleteCacheEntries(cacheDirectory string) ([]cacheEntry, error) {
 				modTime = info.ModTime()
 			}
 		}
+		// _mux is written last in RunAndCache, so include it when present.
+		muxPath := filepath.Join(cacheDirectory, key+"_mux")
+		if muxInfo, err := os.Stat(muxPath); err == nil {
+			if muxInfo.ModTime().After(modTime) {
+				modTime = muxInfo.ModTime()
+			}
+		}
 
 		entries = append(entries, cacheEntry{
 			Key:            key,
