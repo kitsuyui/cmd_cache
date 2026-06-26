@@ -40,6 +40,17 @@ Options:
 
 const cacheStatusHeader = "cmd_cache status v1\n"
 
+// cacheMuxHeader is the version identifier written at the start of every mux
+// file. replayMux checks for it and returns errMuxFormatIncompatible if it is
+// absent or does not match, so that ReplayByCache can fall back gracefully to
+// the sequential _out/_err path rather than producing garbled output.
+const cacheMuxHeader = "cmd_cache mux v1\n"
+
+// errMuxFormatIncompatible is returned by replayMux when the mux file header
+// is absent or unrecognised. The caller should fall back to the sequential
+// _out/_err replay path rather than treating this as data corruption.
+var errMuxFormatIncompatible = errors.New("mux format incompatible")
+
 type CommandContext struct {
 	Command                  []string
 	Texts                    []string
@@ -259,7 +270,14 @@ func (cc CommandCache) ReplayByCache() (int, error) {
 	if cc.MuxFilepath != "" {
 		if muxFile, err := os.Open(cc.MuxFilepath); err == nil {
 			defer muxFile.Close()
-			return exitStatus, replayMux(muxFile)
+			if err := replayMux(muxFile); err == nil {
+				return exitStatus, nil
+			} else if !errors.Is(err, errMuxFormatIncompatible) {
+				return exitStatus, err
+			}
+			// Format incompatible (no version header or unknown version): fall
+			// through to the sequential _out/_err path. This preserves replay
+			// for existing caches written before the version header was added.
 		}
 	}
 	// Buffer both output files before writing. If either read fails no bytes
@@ -283,8 +301,17 @@ func (cc CommandCache) ReplayByCache() (int, error) {
 }
 
 // replayMux reads a mux stream written by muxWriter and dispatches each frame
-// to os.Stdout (stream_id=1) or os.Stderr (stream_id=2).
+// to os.Stdout (stream_id=1) or os.Stderr (stream_id=2). It expects cacheMuxHeader
+// at the start of the stream; if absent or unrecognised it returns
+// errMuxFormatIncompatible so the caller can fall back gracefully.
 func replayMux(r io.Reader) error {
+	var versionBuf [len(cacheMuxHeader)]byte
+	if _, err := io.ReadFull(r, versionBuf[:]); err != nil {
+		return errMuxFormatIncompatible
+	}
+	if string(versionBuf[:]) != cacheMuxHeader {
+		return fmt.Errorf("%w: got %q", errMuxFormatIncompatible, string(versionBuf[:]))
+	}
 	var header [5]byte
 	for {
 		if _, err := io.ReadFull(r, header[:]); err != nil {
@@ -349,6 +376,9 @@ func (cc CommandCache) RunAndCache() (int, error) {
 			return 1, err
 		}
 		defer muxFile.Remove()
+		if _, err := muxFile.file.WriteString(cacheMuxHeader); err != nil {
+			return 1, err
+		}
 		outWriters = append(outWriters, &muxWriter{mu: &muxMu, w: muxFile.file, stream: 1})
 		errWriters = append(errWriters, &muxWriter{mu: &muxMu, w: muxFile.file, stream: 2})
 	}
