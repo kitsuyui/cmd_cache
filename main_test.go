@@ -818,6 +818,39 @@ func TestMainRejectsInvalidMaxCacheEntries(t *testing.T) {
 	}
 }
 
+func TestMainMaxCacheEntriesZeroDisablesPruning(t *testing.T) {
+	originalExit := exit
+	defer func() {
+		exit = originalExit
+	}()
+	originalArgs := os.Args
+	defer func() {
+		os.Args = originalArgs
+	}()
+
+	cacheDirectory := t.TempDir()
+	exit = func(code int) {
+		if code != 0 {
+			panic(testExitCode(code))
+		}
+	}
+
+	for _, text := range []string{"first", "second"} {
+		os.Args = []string{"cmd_cache", "--cache-directory=" + cacheDirectory, "--max-cache-entries=0", "--text", text, "--", "sh", "-c", "echo " + text}
+		if _, recovered := captureStdoutDuring(t, main); recovered != nil {
+			t.Fatalf("main() recovered %v, want nil", recovered)
+		}
+	}
+
+	entries, err := collectCompleteCacheEntries(cacheDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("complete entries = %d, want 2", len(entries))
+	}
+}
+
 func TestPruneCacheEntriesRemovesOldestCompleteEntries(t *testing.T) {
 	cacheDirectory := t.TempDir()
 	oldTime := time.Unix(100, 0)
@@ -866,7 +899,7 @@ func TestPruneCacheEntriesIgnoresIncompleteEntries(t *testing.T) {
 	assertPartialCacheEntryExists(t, cacheDirectory, incompleteKey)
 }
 
-func TestPruneCacheEntriesDisabledKeepsCompleteEntries(t *testing.T) {
+func TestPruneCacheEntriesZeroRemovesCompleteEntries(t *testing.T) {
 	cacheDirectory := t.TempDir()
 	oldKey := "0000000000000000000000000000000000000001"
 	newKey := "0000000000000000000000000000000000000002"
@@ -877,8 +910,18 @@ func TestPruneCacheEntriesDisabledKeepsCompleteEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assertCacheEntryExists(t, cacheDirectory, oldKey)
-	assertCacheEntryExists(t, cacheDirectory, newKey)
+	assertCacheEntryRemoved(t, cacheDirectory, oldKey)
+	assertCacheEntryRemoved(t, cacheDirectory, newKey)
+}
+
+func TestPruneCacheEntriesRejectsNegativeMaxEntries(t *testing.T) {
+	err := pruneCacheEntries(t.TempDir(), -1)
+	if err == nil {
+		t.Fatal("pruneCacheEntries returned nil error for negative maxEntries")
+	}
+	if !strings.Contains(err.Error(), "non-negative") {
+		t.Fatalf("error = %q, want non-negative validation", err)
+	}
 }
 
 func TestPruneCacheEntriesIgnoresNonCacheFileGroups(t *testing.T) {
