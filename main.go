@@ -218,13 +218,13 @@ func (cc CommandCache) GetOrRun() (int, error) {
 	lockPath := cc.StatusFilepath + ".lock"
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
-		// Lock file cannot be opened; fall back to running without a lock.
+		fmt.Fprintf(os.Stderr, "cmd_cache: warning: cannot open lock file %s (%v); running without lock\n", lockPath, err)
 		return cc.RunAndCache()
 	}
 	defer lockFile.Close()
 
 	if err := flockExclusive(lockFile); err != nil {
-		// flock failed or unavailable; fall back to running without a lock.
+		fmt.Fprintf(os.Stderr, "cmd_cache: warning: flock failed on %s (%v); running without lock\n", lockPath, err)
 		return cc.RunAndCache()
 	}
 	defer flockUnlock(lockFile)
