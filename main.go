@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
@@ -11,11 +12,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -203,12 +206,9 @@ func (f *cacheTempFile) Rename() error {
 	return nil
 }
 
-// GetOrRun returns the cached result if available. On a cache miss it acquires
-// an exclusive advisory lock on a per-cache-key lock file, re-checks the cache
-// (another process may have populated it while we waited), and runs the command
-// only if the cache is still empty. This prevents multiple concurrent processes
-// from executing the same command (thundering herd / stampede).
-func (cc CommandCache) GetOrRun() (int, error) {
+// GetOrRunContext is like GetOrRun but propagates ctx to the subprocess so that
+// cancellation (e.g. from os/signal.NotifyContext) terminates the child process.
+func (cc CommandCache) GetOrRunContext(ctx context.Context) (int, error) {
 	// Fast path: read from cache without acquiring a lock.
 	if exitStatus, err := cc.ReplayByCache(); err == nil {
 		return exitStatus, nil
@@ -218,14 +218,14 @@ func (cc CommandCache) GetOrRun() (int, error) {
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		// Lock file cannot be opened; fall back to running without a lock.
-		return cc.RunAndCache()
+		return cc.RunAndCacheContext(ctx)
 	}
 	defer os.Remove(lockPath) // remove after Close (LIFO: registered first, runs last)
 	defer lockFile.Close()
 
 	if err := flockExclusive(lockFile); err != nil {
 		// flock failed or unavailable; fall back to running without a lock.
-		return cc.RunAndCache()
+		return cc.RunAndCacheContext(ctx)
 	}
 	defer flockUnlock(lockFile)
 
@@ -234,7 +234,16 @@ func (cc CommandCache) GetOrRun() (int, error) {
 		return exitStatus, nil
 	}
 
-	return cc.RunAndCache()
+	return cc.RunAndCacheContext(ctx)
+}
+
+// GetOrRun returns the cached result if available. On a cache miss it acquires
+// an exclusive advisory lock on a per-cache-key lock file, re-checks the cache
+// (another process may have populated it while we waited), and runs the command
+// only if the cache is still empty. This prevents multiple concurrent processes
+// from executing the same command (thundering herd / stampede).
+func (cc CommandCache) GetOrRun() (int, error) {
+	return cc.GetOrRunContext(context.Background())
 }
 
 func (cc CommandCache) ReplayByCache() (int, error) {
@@ -336,7 +345,9 @@ func formatCachedExitStatus(exitStatus int) []byte {
 	return []byte(cacheStatusHeader + strconv.Itoa(exitStatus) + "\n")
 }
 
-func (cc CommandCache) RunAndCache() (int, error) {
+// RunAndCacheContext is like RunAndCache but propagates ctx to the subprocess so
+// that cancellation (e.g. from os/signal.NotifyContext) terminates the child.
+func (cc CommandCache) RunAndCacheContext(ctx context.Context) (int, error) {
 	outFile, err := newCacheTempFile(cc.OutFilepath)
 	if err != nil {
 		return 1, err
@@ -368,7 +379,7 @@ func (cc CommandCache) RunAndCache() (int, error) {
 	errWriter := io.MultiWriter(errWriters...)
 
 	commands := cc.Command
-	cmd := exec.Command(commands[0], commands[1:]...)
+	cmd := exec.CommandContext(ctx, commands[0], commands[1:]...)
 	// Pass the full process environment so commands can resolve binaries via PATH
 	// and read user config via HOME. Only --env variables are in the cache key;
 	// callers must list any env var that affects output.
@@ -376,6 +387,12 @@ func (cc CommandCache) RunAndCache() (int, error) {
 	cmd.Stdout = outWriter
 	cmd.Stderr = errWriter
 	err = cmd.Run()
+
+	// If the context was cancelled the subprocess was killed; propagate a
+	// non-zero exit code without caching the partial output.
+	if ctx.Err() != nil {
+		return 1, ctx.Err()
+	}
 	var exitStatus int
 	if err2, ok := err.(*exec.ExitError); ok {
 		exitStatus = err2.ExitCode()
@@ -415,6 +432,12 @@ func (cc CommandCache) RunAndCache() (int, error) {
 		}
 	}
 	return exitStatus, nil
+}
+
+// RunAndCache executes the command and caches the result.
+// Use RunAndCacheContext to propagate a cancellation context.
+func (cc CommandCache) RunAndCache() (int, error) {
+	return cc.RunAndCacheContext(context.Background())
 }
 
 func parseMaxCacheEntries(value string) (int, error) {
@@ -660,7 +683,10 @@ func main() {
 		MuxFilepath:    filepath.Join(cacheDirectory, cacheKey+"_mux"),
 	}
 
-	exitStatus, err := commandCache.GetOrRun()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	exitStatus, err := commandCache.GetOrRunContext(ctx)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		if exitStatus == 0 {
