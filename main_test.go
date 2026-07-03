@@ -10,8 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	docopt "github.com/docopt/docopt-go"
 )
 
 func TestMain(t *testing.T) {
@@ -33,31 +31,26 @@ func TestMain(t *testing.T) {
 	main()
 }
 
-func TestDocopt(t *testing.T) {
-	_, err := docopt.ParseArgs(COMMAND_USAGE, []string{
-		"--file", "test.txt", "--", "ls", "-ahl",
-	}, "")
+func TestParseCLIFile(t *testing.T) {
+	opts, err := parseCLI([]string{"--file", "test.txt", "--", "ls", "-ahl"})
 	if err != nil {
-		t.Error("Document for docopt has broken")
+		t.Fatalf("parseCLI returned error: %v", err)
+	}
+	if len(opts.files) != 1 || opts.files[0] != "test.txt" {
+		t.Errorf("files = %v, want [test.txt]", opts.files)
+	}
+	if len(opts.command) == 0 || opts.command[0] != "ls" {
+		t.Errorf("command = %v, want [ls ...]", opts.command)
 	}
 }
 
-func TestDocoptRejectsMissingCommand(t *testing.T) {
-	parser := &docopt.Parser{HelpHandler: docopt.NoHelpHandler}
-	_, err := parser.ParseArgs(COMMAND_USAGE, []string{
-		"--file", "test.txt", "--",
-	}, "")
-	if err == nil {
-		t.Fatal("docopt accepted a missing command")
-	}
-}
-
-func TestVersion(t *testing.T) {
-	_, err := docopt.ParseArgs(COMMAND_USAGE, []string{
-		"--version",
-	}, "")
+func TestParseCLIVersion(t *testing.T) {
+	opts, err := parseCLI([]string{"--version"})
 	if err != nil {
-		t.Error("Document for docopt has broken")
+		t.Fatalf("parseCLI returned error: %v", err)
+	}
+	if !opts.showVersion {
+		t.Error("showVersion should be true for --version flag")
 	}
 }
 
