@@ -1,15 +1,19 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
 	"hash"
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -17,8 +21,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/docopt/docopt-go"
 )
 
 const COMMAND_USAGE = `cmd_cache
@@ -40,6 +42,24 @@ Options:
 `
 
 const cacheStatusHeader = "cmd_cache status v1\n"
+
+// maxMuxFrameLength caps the per-frame allocation in replayMux.
+// Subprocess output arrives through OS pipes whose write-side buffer is
+// typically ~64 KiB, so legitimate frames are far below this limit.
+// A corrupted or adversarial _mux file could otherwise trigger a multi-GiB
+// allocation via the raw uint32 frame-length field.
+const maxMuxFrameLength = 64 * 1024 * 1024 // 64 MiB
+
+// cacheMuxHeader is the version identifier written at the start of every mux
+// file. replayMux checks for it and returns errMuxFormatIncompatible if it is
+// absent or does not match, so that ReplayByCache can fall back gracefully to
+// the sequential _out/_err path rather than producing garbled output.
+const cacheMuxHeader = "cmd_cache mux v1\n"
+
+// errMuxFormatIncompatible is returned by replayMux when the mux file header
+// is absent or unrecognised. The caller should fall back to the sequential
+// _out/_err replay path rather than treating this as data corruption.
+var errMuxFormatIncompatible = errors.New("mux format incompatible")
 
 type CommandContext struct {
 	Command                  []string
@@ -146,12 +166,25 @@ type muxWriter struct {
 	stream byte // 1 = stdout, 2 = stderr
 }
 
+const maxMuxFramePayloadLength uint64 = 1<<32 - 1
+
+func muxFrameHeader(stream byte, payloadLength uint64) ([5]byte, error) {
+	var header [5]byte
+	if payloadLength > maxMuxFramePayloadLength {
+		return header, fmt.Errorf("mux frame payload too large: %d bytes exceeds %d-byte frame limit", payloadLength, maxMuxFramePayloadLength)
+	}
+	header[0] = stream
+	binary.BigEndian.PutUint32(header[1:], uint32(payloadLength))
+	return header, nil
+}
+
 func (m *muxWriter) Write(p []byte) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var header [5]byte
-	header[0] = m.stream
-	binary.BigEndian.PutUint32(header[1:], uint32(len(p)))
+	header, err := muxFrameHeader(m.stream, uint64(len(p)))
+	if err != nil {
+		return 0, err
+	}
 	if _, err := m.w.Write(header[:]); err != nil {
 		return 0, err
 	}
@@ -205,37 +238,62 @@ func (f *cacheTempFile) Rename() error {
 	return nil
 }
 
-// GetOrRun returns the cached result if available. On a cache miss it acquires
-// an exclusive advisory lock on a per-cache-key lock file, re-checks the cache
-// (another process may have populated it while we waited), and runs the command
-// only if the cache is still empty. This prevents multiple concurrent processes
-// from executing the same command (thundering herd / stampede).
-func (cc CommandCache) GetOrRun() (int, error) {
+func (f *cacheTempFile) RemoveFinalPath() {
+	_ = os.Remove(f.finalPath)
+}
+
+// commitCacheFiles renames each file in order; on failure, it rolls back the
+// already-committed renames so no partial cache entries are left on disk.
+func commitCacheFiles(files ...*cacheTempFile) error {
+	committed := make([]*cacheTempFile, 0, len(files))
+	for _, f := range files {
+		if f == nil {
+			continue
+		}
+		if err := f.Rename(); err != nil {
+			for _, c := range committed {
+				c.RemoveFinalPath()
+			}
+			return err
+		}
+		committed = append(committed, f)
+	}
+	return nil
+}
+
+// GetOrRunContext is like GetOrRun but propagates ctx to the subprocess so that
+// cancellation (e.g. from os/signal.NotifyContext) terminates the child process.
+func (cc CommandCache) GetOrRunContext(ctx context.Context) (int, error) {
 	// Fast path: read from cache without acquiring a lock.
 	if exitStatus, err := cc.ReplayByCache(); err == nil {
 		return exitStatus, nil
 	}
 
 	lockPath := cc.StatusFilepath + ".lock"
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		// Lock file cannot be opened; fall back to running without a lock.
-		return cc.RunAndCache()
+		return cc.RunAndCacheContext(ctx)
 	}
+	defer os.Remove(lockPath) // remove after Close (LIFO: registered first, runs last)
 	defer lockFile.Close()
 
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
-		// flock failed; fall back to running without a lock.
-		return cc.RunAndCache()
+	if err := flockExclusive(lockFile); err != nil {
+		// flock failed or unavailable; fall back to running without a lock.
+		return cc.RunAndCacheContext(ctx)
 	}
-	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	defer flockUnlock(lockFile)
 
 	// Double-check: another process may have written the cache while we waited.
 	if exitStatus, err := cc.ReplayByCache(); err == nil {
 		return exitStatus, nil
 	}
 
-	return cc.RunAndCache()
+	return cc.RunAndCacheContext(ctx)
+}
+
+func (cc CommandCache) GetOrRun() (int, error) {
+	return cc.GetOrRunContext(context.Background())
 }
 
 func (cc CommandCache) ReplayByCache() (int, error) {
@@ -258,9 +316,20 @@ func (cc CommandCache) ReplayByCache() (int, error) {
 	// interleaving order captured during RunAndCache. Old caches without a mux
 	// file fall back to the sequential (all-stdout-then-all-stderr) path below.
 	if cc.MuxFilepath != "" {
-		if muxFile, err := os.Open(cc.MuxFilepath); err == nil {
-			defer muxFile.Close()
-			return exitStatus, replayMux(muxFile)
+		if muxData, err := os.ReadFile(cc.MuxFilepath); err == nil {
+			if bytes.HasPrefix(muxData, []byte(cacheMuxHeader)) {
+				if err := replayMux(bytes.NewReader(muxData)); err == nil {
+					return exitStatus, nil
+				} else if !errors.Is(err, errMuxFormatIncompatible) {
+					return exitStatus, err
+				}
+			} else if legacyErr := validateLegacyMuxFile(muxData); legacyErr != nil {
+				return 0, legacyErr
+			} else {
+				// Legacy mux files are intentionally replayed via the sequential
+				// _out/_err fallback so that upgrading to the versioned mux format
+				// does not change the observable replay path for old caches.
+			}
 		}
 	}
 	// Buffer both output files before writing. If either read fails no bytes
@@ -284,33 +353,79 @@ func (cc CommandCache) ReplayByCache() (int, error) {
 }
 
 // replayMux reads a mux stream written by muxWriter and dispatches each frame
-// to os.Stdout (stream_id=1) or os.Stderr (stream_id=2).
+// to os.Stdout (stream_id=1) or os.Stderr (stream_id=2). It expects
+// cacheMuxHeader at the start of the stream; if absent or unrecognised it
+// returns errMuxFormatIncompatible so the caller can fall back gracefully.
+// All frames are buffered in memory before any write so that a truncated or
+// corrupt stream does not produce partial output: if reading fails, nothing is
+// written to stdout/stderr and a fallback to RunAndCache cannot produce
+// duplicate output.
 func replayMux(r io.Reader) error {
-	var header [5]byte
-	for {
-		if _, err := io.ReadFull(r, header[:]); err != nil {
-			if err == io.EOF {
-				return nil
-			}
-			return fmt.Errorf("reading mux header: %w", err)
+	buf, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	if bytes.HasPrefix(buf, []byte(cacheMuxHeader)) {
+		buf = buf[len(cacheMuxHeader):]
+	} else if bytes.HasPrefix(buf, []byte("cmd_cache mux ")) {
+		return fmt.Errorf("%w: got %q", errMuxFormatIncompatible, string(buf[:len(cacheMuxHeader)]))
+	}
+	type frame struct {
+		stream byte
+		data   []byte
+	}
+	var frames []frame
+	for len(buf) > 0 {
+		if len(buf) < 5 {
+			return fmt.Errorf("reading mux header: %w", io.ErrUnexpectedEOF)
 		}
-		stream := header[0]
-		length := binary.BigEndian.Uint32(header[1:])
+		stream := buf[0]
+		length := binary.BigEndian.Uint32(buf[1:5])
+		buf = buf[5:]
+		if length > maxMuxFrameLength {
+			return fmt.Errorf("mux frame length %d exceeds maximum %d: cache file may be corrupt", length, maxMuxFrameLength)
+		}
+		if uint64(len(buf)) < uint64(length) {
+			return fmt.Errorf("reading mux data: %w", io.ErrUnexpectedEOF)
+		}
 		data := make([]byte, length)
-		if _, err := io.ReadFull(r, data); err != nil {
-			return fmt.Errorf("reading mux data: %w", err)
-		}
-		switch stream {
+		copy(data, buf[:length])
+		buf = buf[length:]
+		frames = append(frames, frame{stream: stream, data: data})
+	}
+	for _, f := range frames {
+		switch f.stream {
 		case 1:
-			if _, err := os.Stdout.Write(data); err != nil {
+			if _, err := os.Stdout.Write(f.data); err != nil {
 				return err
 			}
 		case 2:
-			if _, err := os.Stderr.Write(data); err != nil {
+			if _, err := os.Stderr.Write(f.data); err != nil {
 				return err
 			}
+		default:
+			return fmt.Errorf("unknown stream_id %d in mux frame", f.stream)
 		}
 	}
+	return nil
+}
+
+func validateLegacyMuxFile(buf []byte) error {
+	for len(buf) > 0 {
+		if len(buf) < 5 {
+			return fmt.Errorf("reading mux header: %w", io.ErrUnexpectedEOF)
+		}
+		length := binary.BigEndian.Uint32(buf[1:5])
+		buf = buf[5:]
+		if length > maxMuxFrameLength {
+			return fmt.Errorf("mux frame length %d exceeds maximum %d: cache file may be corrupt", length, maxMuxFrameLength)
+		}
+		if uint64(len(buf)) < uint64(length) {
+			return fmt.Errorf("reading mux data: %w", io.ErrUnexpectedEOF)
+		}
+		buf = buf[length:]
+	}
+	return nil
 }
 
 func parseCachedExitStatus(content []byte) (int, error) {
@@ -325,7 +440,9 @@ func formatCachedExitStatus(exitStatus int) []byte {
 	return []byte(cacheStatusHeader + strconv.Itoa(exitStatus) + "\n")
 }
 
-func (cc CommandCache) RunAndCache() (int, error) {
+// RunAndCacheContext is like RunAndCache but propagates ctx to the subprocess so
+// that cancellation (e.g. from os/signal.NotifyContext) terminates the child.
+func (cc CommandCache) RunAndCacheContext(ctx context.Context) (int, error) {
 	outFile, err := newCacheTempFile(cc.OutFilepath)
 	if err != nil {
 		return 1, err
@@ -350,6 +467,9 @@ func (cc CommandCache) RunAndCache() (int, error) {
 			return 1, err
 		}
 		defer muxFile.Remove()
+		if _, err := muxFile.file.WriteString(cacheMuxHeader); err != nil {
+			return 1, err
+		}
 		outWriters = append(outWriters, &muxWriter{mu: &muxMu, w: muxFile.file, stream: 1})
 		errWriters = append(errWriters, &muxWriter{mu: &muxMu, w: muxFile.file, stream: 2})
 	}
@@ -357,7 +477,7 @@ func (cc CommandCache) RunAndCache() (int, error) {
 	errWriter := io.MultiWriter(errWriters...)
 
 	commands := cc.Command
-	cmd := exec.Command(commands[0], commands[1:]...)
+	cmd := exec.CommandContext(ctx, commands[0], commands[1:]...)
 	// Pass the full process environment so commands can resolve binaries via PATH
 	// and read user config via HOME. Only --env variables are in the cache key;
 	// callers must list any env var that affects output.
@@ -365,12 +485,15 @@ func (cc CommandCache) RunAndCache() (int, error) {
 	cmd.Stdout = outWriter
 	cmd.Stderr = errWriter
 	err = cmd.Run()
+
+	// If the context was cancelled the subprocess was killed; propagate a
+	// non-zero exit code without caching the partial output.
+	if ctx.Err() != nil {
+		return 1, ctx.Err()
+	}
 	var exitStatus int
 	if err2, ok := err.(*exec.ExitError); ok {
-		exitStatus = err2.ExitCode()
-		if exitStatus == -1 {
-			exitStatus = 1 // signal-terminated; no numeric exit code available
-		}
+		exitStatus = exitStatusFromExitError(err2)
 	} else if err != nil {
 		return 1, err
 	}
@@ -389,21 +512,27 @@ func (cc CommandCache) RunAndCache() (int, error) {
 	if err := os.Remove(cc.StatusFilepath); err != nil && !os.IsNotExist(err) {
 		return exitStatus, err
 	}
-	if err := outFile.Rename(); err != nil {
+	if err := commitCacheFiles(outFile, errFile, statusFile, muxFile); err != nil {
 		return exitStatus, err
-	}
-	if err := errFile.Rename(); err != nil {
-		return exitStatus, err
-	}
-	if err := statusFile.Rename(); err != nil {
-		return exitStatus, err
-	}
-	if muxFile != nil {
-		if err := muxFile.Rename(); err != nil {
-			return exitStatus, err
-		}
 	}
 	return exitStatus, nil
+}
+
+func exitStatusFromExitError(err *exec.ExitError) int {
+	if status, ok := err.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+		return 128 + int(status.Signal())
+	}
+	exitStatus := err.ExitCode()
+	if exitStatus == -1 {
+		return 1
+	}
+	return exitStatus
+}
+
+// RunAndCache executes the command and caches the result.
+// Use RunAndCacheContext to propagate a cancellation context.
+func (cc CommandCache) RunAndCache() (int, error) {
+	return cc.RunAndCacheContext(context.Background())
 }
 
 func parseMaxCacheEntries(value string) (int, error) {
@@ -432,6 +561,7 @@ func collectCompleteCacheEntries(cacheDirectory string) ([]cacheEntry, error) {
 		return nil, err
 	}
 
+	var errs []error
 	entries := make([]cacheEntry, 0, len(dirEntries))
 	for _, dirEntry := range dirEntries {
 		if dirEntry.IsDir() {
@@ -452,14 +582,23 @@ func collectCompleteCacheEntries(cacheDirectory string) ([]cacheEntry, error) {
 		errPath := filepath.Join(cacheDirectory, key+"_err")
 		statusInfo, err := dirEntry.Info()
 		if err != nil {
+			if !os.IsNotExist(err) {
+				errs = append(errs, err)
+			}
 			continue
 		}
 		outInfo, err := os.Stat(outPath)
 		if err != nil {
+			if !os.IsNotExist(err) {
+				errs = append(errs, err)
+			}
 			continue
 		}
 		errInfo, err := os.Stat(errPath)
 		if err != nil {
+			if !os.IsNotExist(err) {
+				errs = append(errs, err)
+			}
 			continue
 		}
 
@@ -467,6 +606,13 @@ func collectCompleteCacheEntries(cacheDirectory string) ([]cacheEntry, error) {
 		for _, info := range []os.FileInfo{outInfo, errInfo} {
 			if info.ModTime().After(modTime) {
 				modTime = info.ModTime()
+			}
+		}
+		// _mux is written last in RunAndCache, so include it when present.
+		muxPath := filepath.Join(cacheDirectory, key+"_mux")
+		if muxInfo, err := os.Stat(muxPath); err == nil {
+			if muxInfo.ModTime().After(modTime) {
+				modTime = muxInfo.ModTime()
 			}
 		}
 
@@ -487,7 +633,7 @@ func collectCompleteCacheEntries(cacheDirectory string) ([]cacheEntry, error) {
 		}
 		return entries[i].ModTime.Before(entries[j].ModTime)
 	})
-	return entries, nil
+	return entries, errors.Join(errs...)
 }
 
 // cleanOrphanedTempFiles removes `.*.tmp-*` files in cacheDirectory that are
@@ -519,62 +665,105 @@ func cleanOrphanedTempFiles(cacheDirectory string, minAge time.Duration) error {
 }
 
 func pruneCacheEntries(cacheDirectory string, maxEntries int) error {
-	if maxEntries <= 0 {
-		return nil
+	if maxEntries < 0 {
+		return fmt.Errorf("maxEntries must be non-negative: %d", maxEntries)
 	}
 
-	entries, err := collectCompleteCacheEntries(cacheDirectory)
-	if err != nil {
-		return err
-	}
-	if len(entries) <= maxEntries {
-		return nil
-	}
-
-	var errs []error
-	for _, entry := range entries[:len(entries)-maxEntries] {
-		for _, path := range []string{entry.StatusFilepath, entry.OutFilepath, entry.ErrFilepath, entry.MuxFilepath, entry.LockFilepath} {
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				errs = append(errs, err)
+	entries, collectErr := collectCompleteCacheEntries(cacheDirectory)
+	if len(entries) > maxEntries {
+		var errs []error
+		for _, entry := range entries[:len(entries)-maxEntries] {
+			for _, path := range []string{entry.StatusFilepath, entry.OutFilepath, entry.ErrFilepath, entry.MuxFilepath, entry.LockFilepath} {
+				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+					errs = append(errs, err)
+				}
 			}
 		}
+		return errors.Join(errors.Join(errs...), collectErr)
 	}
-	return errors.Join(errs...)
+	return collectErr
 }
 
 var version string
 var exit = os.Exit
 
+// stringSlice accumulates repeated flag values (e.g. --file a --file b).
+type stringSlice []string
+
+func (s *stringSlice) String() string { return strings.Join(*s, ",") }
+func (s *stringSlice) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
+type cliOptions struct {
+	cacheDirectory  string
+	maxCacheEntries string
+	showVersion     bool
+	files           []string
+	envVars         []string
+	texts           []string
+	command         []string
+}
+
+func parseCLI(args []string) (cliOptions, error) {
+	fs := flag.NewFlagSet("cmd_cache", flag.ContinueOnError)
+	fs.Usage = func() { fmt.Fprint(os.Stderr, COMMAND_USAGE) }
+
+	var files, envVars, texts stringSlice
+	cacheDir := fs.String("cache-directory", ".cmd_cache", "Cache directory")
+	maxEntries := fs.String("max-cache-entries", "1024", "Maximum complete cache entries to keep; 0 disables pruning")
+	showVersion := fs.Bool("version", false, "Show version")
+	showVersionShort := fs.Bool("V", false, "Show version")
+	fs.Var(&files, "file", "Depending file under the current working directory (may be repeated)")
+	fs.Var(&envVars, "env", "Depending environment variable (may be repeated)")
+	fs.Var(&texts, "text", "Text affecting command (may be repeated)")
+
+	if err := fs.Parse(args); err != nil {
+		return cliOptions{}, err
+	}
+	return cliOptions{
+		cacheDirectory:  *cacheDir,
+		maxCacheEntries: *maxEntries,
+		showVersion:     *showVersion || *showVersionShort,
+		files:           []string(files),
+		envVars:         []string(envVars),
+		texts:           []string(texts),
+		command:         fs.Args(),
+	}, nil
+}
+
 func main() {
-	parser := &docopt.Parser{HelpHandler: docopt.PrintHelpOnly}
-	opts, err := parser.ParseArgs(COMMAND_USAGE, nil, "")
+	opts, err := parseCLI(os.Args[1:])
 	if err != nil {
+		if err == flag.ErrHelp {
+			return
+		}
 		fmt.Fprintln(os.Stderr, err)
 		exit(1)
 		return
 	}
-	if opts == nil {
-		return
-	}
-	if showVersion, _ := opts.Bool("--version"); showVersion {
+	if opts.showVersion {
 		fmt.Println(version)
 		return
 	}
-	cacheDirectory := opts["--cache-directory"].(string)
-	maxCacheEntries, err := parseMaxCacheEntries(opts["--max-cache-entries"].(string))
+	cacheDirectory := opts.cacheDirectory
+	maxCacheEntries, err := parseMaxCacheEntries(opts.maxCacheEntries)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		exit(1)
+		return
 	}
-	if err := os.MkdirAll(cacheDirectory, 0755); err != nil {
+	if err := os.MkdirAll(cacheDirectory, 0700); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		exit(1)
+		return
 	}
 	if err := cleanOrphanedTempFiles(cacheDirectory, time.Hour); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 	}
 
-	commands := opts["COMMAND"].([]string)
+	commands := opts.command
 	if len(commands) == 0 {
 		fmt.Fprintln(os.Stderr, "COMMAND is required")
 		exit(1)
@@ -582,9 +771,9 @@ func main() {
 	}
 	commandContext := CommandContext{
 		Command:                  commands,
-		Texts:                    opts["TEXT"].([]string),
-		EnvironmentVariableNames: opts["ENV"].([]string),
-		Filenames:                opts["FILE"].([]string),
+		Texts:                    opts.texts,
+		EnvironmentVariableNames: opts.envVars,
+		Filenames:                opts.files,
 	}
 
 	h := sha1.New()
@@ -602,12 +791,20 @@ func main() {
 		MuxFilepath:    filepath.Join(cacheDirectory, cacheKey+"_mux"),
 	}
 
-	exitStatus, err := commandCache.GetOrRun()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	exitStatus, err := commandCache.GetOrRunContext(ctx)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		if exitStatus == 0 {
+			exitStatus = 1 // cache infrastructure failure must not exit 0
+		}
 	}
-	if pruneErr := pruneCacheEntries(cacheDirectory, maxCacheEntries); pruneErr != nil {
-		fmt.Fprintln(os.Stderr, pruneErr)
+	if maxCacheEntries > 0 {
+		if pruneErr := pruneCacheEntries(cacheDirectory, maxCacheEntries); pruneErr != nil {
+			fmt.Fprintln(os.Stderr, pruneErr)
+		}
 	}
 	exit(exitStatus)
 }
