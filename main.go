@@ -238,6 +238,29 @@ func (f *cacheTempFile) Rename() error {
 	return nil
 }
 
+func (f *cacheTempFile) RemoveFinalPath() {
+	_ = os.Remove(f.finalPath)
+}
+
+// commitCacheFiles renames each file in order; on failure, it rolls back the
+// already-committed renames so no partial cache entries are left on disk.
+func commitCacheFiles(files ...*cacheTempFile) error {
+	committed := make([]*cacheTempFile, 0, len(files))
+	for _, f := range files {
+		if f == nil {
+			continue
+		}
+		if err := f.Rename(); err != nil {
+			for _, c := range committed {
+				c.RemoveFinalPath()
+			}
+			return err
+		}
+		committed = append(committed, f)
+	}
+	return nil
+}
+
 // GetOrRunContext is like GetOrRun but propagates ctx to the subprocess so that
 // cancellation (e.g. from os/signal.NotifyContext) terminates the child process.
 func (cc CommandCache) GetOrRunContext(ctx context.Context) (int, error) {
@@ -269,11 +292,6 @@ func (cc CommandCache) GetOrRunContext(ctx context.Context) (int, error) {
 	return cc.RunAndCacheContext(ctx)
 }
 
-// GetOrRun returns the cached result if available. On a cache miss it acquires
-// an exclusive advisory lock on a per-cache-key lock file, re-checks the cache
-// (another process may have populated it while we waited), and runs the command
-// only if the cache is still empty. This prevents multiple concurrent processes
-// from executing the same command (thundering herd / stampede).
 func (cc CommandCache) GetOrRun() (int, error) {
 	return cc.GetOrRunContext(context.Background())
 }
@@ -497,19 +515,8 @@ func (cc CommandCache) RunAndCacheContext(ctx context.Context) (int, error) {
 	if err := os.Remove(cc.StatusFilepath); err != nil && !os.IsNotExist(err) {
 		return exitStatus, err
 	}
-	if err := outFile.Rename(); err != nil {
+	if err := commitCacheFiles(outFile, errFile, statusFile, muxFile); err != nil {
 		return exitStatus, err
-	}
-	if err := errFile.Rename(); err != nil {
-		return exitStatus, err
-	}
-	if err := statusFile.Rename(); err != nil {
-		return exitStatus, err
-	}
-	if muxFile != nil {
-		if err := muxFile.Rename(); err != nil {
-			return exitStatus, err
-		}
 	}
 	return exitStatus, nil
 }
