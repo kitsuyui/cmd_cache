@@ -415,8 +415,14 @@ func validateLegacyMuxFile(buf []byte) error {
 		if len(buf) < 5 {
 			return fmt.Errorf("reading mux header: %w", io.ErrUnexpectedEOF)
 		}
+		stream := buf[0]
 		length := binary.BigEndian.Uint32(buf[1:5])
 		buf = buf[5:]
+		switch stream {
+		case 1, 2:
+		default:
+			return fmt.Errorf("unknown stream_id %d in mux frame", stream)
+		}
 		if length > maxMuxFrameLength {
 			return fmt.Errorf("mux frame length %d exceeds maximum %d: cache file may be corrupt", length, maxMuxFrameLength)
 		}
