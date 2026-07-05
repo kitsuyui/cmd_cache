@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha1"
+	"encoding/binary"
 	"encoding/hex"
 	"io"
 	"log"
@@ -10,8 +12,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	docopt "github.com/docopt/docopt-go"
 )
 
 func TestMain(t *testing.T) {
@@ -33,31 +33,26 @@ func TestMain(t *testing.T) {
 	main()
 }
 
-func TestDocopt(t *testing.T) {
-	_, err := docopt.ParseArgs(COMMAND_USAGE, []string{
-		"--file", "test.txt", "--", "ls", "-ahl",
-	}, "")
+func TestParseCLIFile(t *testing.T) {
+	opts, err := parseCLI([]string{"--file", "test.txt", "--", "ls", "-ahl"})
 	if err != nil {
-		t.Error("Document for docopt has broken")
+		t.Fatalf("parseCLI returned error: %v", err)
+	}
+	if len(opts.files) != 1 || opts.files[0] != "test.txt" {
+		t.Errorf("files = %v, want [test.txt]", opts.files)
+	}
+	if len(opts.command) == 0 || opts.command[0] != "ls" {
+		t.Errorf("command = %v, want [ls ...]", opts.command)
 	}
 }
 
-func TestDocoptRejectsMissingCommand(t *testing.T) {
-	parser := &docopt.Parser{HelpHandler: docopt.NoHelpHandler}
-	_, err := parser.ParseArgs(COMMAND_USAGE, []string{
-		"--file", "test.txt", "--",
-	}, "")
-	if err == nil {
-		t.Fatal("docopt accepted a missing command")
-	}
-}
-
-func TestVersion(t *testing.T) {
-	_, err := docopt.ParseArgs(COMMAND_USAGE, []string{
-		"--version",
-	}, "")
+func TestParseCLIVersion(t *testing.T) {
+	opts, err := parseCLI([]string{"--version"})
 	if err != nil {
-		t.Error("Document for docopt has broken")
+		t.Fatalf("parseCLI returned error: %v", err)
+	}
+	if !opts.showVersion {
+		t.Error("showVersion should be true for --version flag")
 	}
 }
 
@@ -660,6 +655,47 @@ func TestReplayByCacheNoStdoutWhenErrFileMissing(t *testing.T) {
 	}
 }
 
+func TestReplayMuxNoStdoutOnTruncatedMuxFile(t *testing.T) {
+	// A truncated mux file must not produce any stdout/stderr output before the
+	// read error is detected. Previously replayMux wrote frames incrementally;
+	// a partial read could emit output to stdout and then return an error, causing
+	// GetOrRun to fall back to RunAndCache and produce duplicate output.
+	cacheDirectory := t.TempDir()
+	cacheKey := "mux-truncated-test"
+	commandCache := CommandCache{
+		Command:        []string{"sh", "-c", "echo unreachable"},
+		StatusFilepath: filepath.Join(cacheDirectory, cacheKey),
+		OutFilepath:    filepath.Join(cacheDirectory, cacheKey+"_out"),
+		ErrFilepath:    filepath.Join(cacheDirectory, cacheKey+"_err"),
+		MuxFilepath:    filepath.Join(cacheDirectory, cacheKey+"_mux"),
+	}
+
+	// Build a mux file with one valid frame followed by a truncated frame header.
+	frame1Data := []byte("hello")
+	var muxData []byte
+	muxData = append(muxData, 1, 0, 0, 0, byte(len(frame1Data))) // frame 1 header: stdout, len=5
+	muxData = append(muxData, frame1Data...)
+	muxData = append(muxData, 1, 0, 0) // truncated frame 2 header (3 of 5 bytes)
+
+	for path, content := range map[string][]byte{
+		commandCache.StatusFilepath: []byte("0"),
+		commandCache.OutFilepath:    []byte("cached stdout"),
+		commandCache.ErrFilepath:    []byte("cached stderr"),
+		commandCache.MuxFilepath:    muxData,
+	} {
+		if err := os.WriteFile(path, content, 0666); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stdout, _ := captureStdoutDuring(t, func() {
+		_, _ = commandCache.ReplayByCache()
+	})
+	if stdout != "" {
+		t.Fatalf("ReplayByCache() wrote %q to stdout on truncated mux file", stdout)
+	}
+}
+
 func TestRunAndCacheReturnsCommandStartError(t *testing.T) {
 	cacheDirectory := t.TempDir()
 	cacheKey := "cache-key"
@@ -715,6 +751,24 @@ func TestRunAndCacheCreatesMuxFileAndReplayPreservesStreams(t *testing.T) {
 	})
 	if stdout != "out" {
 		t.Errorf("stdout = %q, want %q", stdout, "out")
+	}
+}
+
+func TestMuxFrameHeaderEncodesMaxPayloadLength(t *testing.T) {
+	header, err := muxFrameHeader(2, maxMuxFramePayloadLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := [5]byte{2, 0xff, 0xff, 0xff, 0xff}
+	if header != expected {
+		t.Fatalf("muxFrameHeader() = %v, want %v", header, expected)
+	}
+}
+
+func TestMuxFrameHeaderRejectsOversizedPayload(t *testing.T) {
+	_, err := muxFrameHeader(1, maxMuxFramePayloadLength+1)
+	if err == nil {
+		t.Fatal("muxFrameHeader() accepted a payload larger than the uint32 frame limit")
 	}
 }
 
@@ -818,6 +872,39 @@ func TestMainRejectsInvalidMaxCacheEntries(t *testing.T) {
 	}
 }
 
+func TestMainMaxCacheEntriesZeroDisablesPruning(t *testing.T) {
+	originalExit := exit
+	defer func() {
+		exit = originalExit
+	}()
+	originalArgs := os.Args
+	defer func() {
+		os.Args = originalArgs
+	}()
+
+	cacheDirectory := t.TempDir()
+	exit = func(code int) {
+		if code != 0 {
+			panic(testExitCode(code))
+		}
+	}
+
+	for _, text := range []string{"first", "second"} {
+		os.Args = []string{"cmd_cache", "--cache-directory=" + cacheDirectory, "--max-cache-entries=0", "--text", text, "--", "sh", "-c", "echo " + text}
+		if _, recovered := captureStdoutDuring(t, main); recovered != nil {
+			t.Fatalf("main() recovered %v, want nil", recovered)
+		}
+	}
+
+	entries, err := collectCompleteCacheEntries(cacheDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("complete entries = %d, want 2", len(entries))
+	}
+}
+
 func TestPruneCacheEntriesRemovesOldestCompleteEntries(t *testing.T) {
 	cacheDirectory := t.TempDir()
 	oldTime := time.Unix(100, 0)
@@ -866,7 +953,7 @@ func TestPruneCacheEntriesIgnoresIncompleteEntries(t *testing.T) {
 	assertPartialCacheEntryExists(t, cacheDirectory, incompleteKey)
 }
 
-func TestPruneCacheEntriesDisabledKeepsCompleteEntries(t *testing.T) {
+func TestPruneCacheEntriesZeroRemovesCompleteEntries(t *testing.T) {
 	cacheDirectory := t.TempDir()
 	oldKey := "0000000000000000000000000000000000000001"
 	newKey := "0000000000000000000000000000000000000002"
@@ -877,8 +964,18 @@ func TestPruneCacheEntriesDisabledKeepsCompleteEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assertCacheEntryExists(t, cacheDirectory, oldKey)
-	assertCacheEntryExists(t, cacheDirectory, newKey)
+	assertCacheEntryRemoved(t, cacheDirectory, oldKey)
+	assertCacheEntryRemoved(t, cacheDirectory, newKey)
+}
+
+func TestPruneCacheEntriesRejectsNegativeMaxEntries(t *testing.T) {
+	err := pruneCacheEntries(t.TempDir(), -1)
+	if err == nil {
+		t.Fatal("pruneCacheEntries returned nil error for negative maxEntries")
+	}
+	if !strings.Contains(err.Error(), "non-negative") {
+		t.Fatalf("error = %q, want non-negative validation", err)
+	}
 }
 
 func TestPruneCacheEntriesIgnoresNonCacheFileGroups(t *testing.T) {
@@ -898,6 +995,61 @@ func TestPruneCacheEntriesIgnoresNonCacheFileGroups(t *testing.T) {
 	assertCacheEntryExists(t, cacheDirectory, "not-a-cache-key")
 }
 
+func TestPruneCacheEntriesMuxModTimeUsedForEviction(t *testing.T) {
+	// Entry A: all files at oldTime, including mux.
+	// Entry B: status/out/err at oldTime, mux at newTime.
+	// After pruning to 1, entry A has effective modTime=oldTime and is evicted;
+	// entry B has effective modTime=newTime (from mux) and is kept.
+	cacheDirectory := t.TempDir()
+	oldTime := time.Unix(100, 0)
+	newTime := time.Unix(200, 0)
+	oldKey := "0000000000000000000000000000000000000001"
+	newKey := "0000000000000000000000000000000000000002"
+
+	writeCompleteCacheEntry(t, cacheDirectory, oldKey, oldTime)
+	writeCompleteCacheEntryWithMuxModTime(t, cacheDirectory, newKey, oldTime, newTime)
+
+	if err := pruneCacheEntries(cacheDirectory, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	assertCacheEntryRemoved(t, cacheDirectory, oldKey)
+	assertCacheEntryExists(t, cacheDirectory, newKey)
+}
+
+func TestCollectCompleteCacheEntriesWithoutMuxFile(t *testing.T) {
+	// Entries without a mux file (old cache format) must still be collected and
+	// their modTime computed from status/out/err only.
+	cacheDirectory := t.TempDir()
+	key := "0000000000000000000000000000000000000001"
+	modTime := time.Unix(100, 0)
+
+	for suffix, content := range map[string]string{
+		"":     "0",
+		"_out": "stdout",
+		"_err": "stderr",
+	} {
+		path := filepath.Join(cacheDirectory, key+suffix)
+		if err := os.WriteFile(path, []byte(content), 0666); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, modTime, modTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entries, err := collectCompleteCacheEntries(cacheDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("complete entries = %d, want 1", len(entries))
+	}
+	if !entries[0].ModTime.Equal(modTime) {
+		t.Fatalf("ModTime = %v, want %v", entries[0].ModTime, modTime)
+	}
+}
+
 func writeCompleteCacheEntry(t *testing.T, cacheDirectory, key string, modTime time.Time) {
 	t.Helper()
 
@@ -915,6 +1067,32 @@ func writeCompleteCacheEntry(t *testing.T, cacheDirectory, key string, modTime t
 		if err := os.Chtimes(path, modTime, modTime); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func writeCompleteCacheEntryWithMuxModTime(t *testing.T, cacheDirectory, key string, modTime, muxModTime time.Time) {
+	t.Helper()
+
+	for suffix, content := range map[string]string{
+		"":      "0",
+		"_out":  "stdout",
+		"_err":  "stderr",
+		".lock": "",
+	} {
+		path := filepath.Join(cacheDirectory, key+suffix)
+		if err := os.WriteFile(path, []byte(content), 0666); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, modTime, modTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	muxPath := filepath.Join(cacheDirectory, key+"_mux")
+	if err := os.WriteFile(muxPath, []byte("mux"), 0666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(muxPath, muxModTime, muxModTime); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1019,6 +1197,36 @@ func TestCommitCacheFilesRollsBackOnFailure(t *testing.T) {
 
 	if _, err := os.Stat(finalOut); !os.IsNotExist(err) {
 		t.Fatalf("commitCacheFiles left orphaned file %s after rollback", finalOut)
+	}
+}
+
+func TestReplayMuxRejectsOversizedFrame(t *testing.T) {
+	var buf bytes.Buffer
+	var header [5]byte
+	header[0] = 1 // stream stdout
+	binary.BigEndian.PutUint32(header[1:], maxMuxFrameLength+1)
+	buf.Write(header[:])
+
+	err := replayMux(&buf)
+	if err == nil {
+		t.Fatal("replayMux() returned nil for a frame exceeding maxMuxFrameLength")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum") {
+		t.Errorf("error message %q does not mention 'exceeds maximum'", err.Error())
+	}
+}
+
+func TestReplayMuxAcceptsMaxSizeFrame(t *testing.T) {
+	var buf bytes.Buffer
+	var header [5]byte
+	header[0] = 1 // stream stdout
+	binary.BigEndian.PutUint32(header[1:], maxMuxFrameLength)
+	buf.Write(header[:])
+	buf.Write(make([]byte, maxMuxFrameLength))
+
+	err := replayMux(&buf)
+	if err != nil {
+		t.Fatalf("replayMux() returned unexpected error for max-size frame: %v", err)
 	}
 }
 
