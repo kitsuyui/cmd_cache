@@ -32,6 +32,22 @@ New cache status files include a `cmd_cache status v1` header before the exit
 status. Existing cache entries that contain only a numeric exit status are still
 accepted for backward compatibility.
 
+## Concurrent execution and locking
+
+On Linux and macOS, `cmd_cache` takes an advisory file lock (`flock`) before
+running the wrapped command, so a second process racing on the same cache
+key waits for the first instead of re-running the command.
+
+**Windows does not support this lock.** `flock` is not available there, so
+`cmd_cache` prints a `running without lock` warning to stderr and runs the
+wrapped command without serialization. If two processes on Windows start
+concurrently with the same cache key before either has written a cache
+entry, the wrapped command can run more than once.
+
+If you rely on `cmd_cache` to prevent duplicate concurrent execution of an
+expensive command on Windows, serialize the invoking step externally (e.g.
+in your build system or CI job) rather than relying on `cmd_cache`'s lock.
+
 ## Environment variable inheritance
 
 The cache key only includes the environment variables listed with `--env`.
